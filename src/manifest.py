@@ -93,6 +93,28 @@ class Manifest:
     def forget(self, source: Path, fmt: str) -> Entry | None:
         return self._entries.pop(self._key(source, fmt), None)
 
+    def forget_target(self, target: Path) -> int:
+        """Drop every entry whose `target` matches. Returns the number
+        removed. The GUI's Library tab thinks in target paths (what it
+        renders) rather than (source, fmt) pairs."""
+        target_str = str(target)
+        keys = [k for k, e in self._entries.items() if e.target == target_str]
+        for k in keys:
+            del self._entries[k]
+        return len(keys)
+
+    def forget_targets_under(self, root: Path) -> int:
+        """Drop every entry whose target is under `root`. Used when the
+        GUI bulk-deletes an album or artist folder."""
+        root_str = str(root.resolve())
+        keys = [
+            k for k, e in self._entries.items()
+            if e.target == root_str or e.target.startswith(root_str + "/")
+        ]
+        for k in keys:
+            del self._entries[k]
+        return len(keys)
+
     def all_entries(self) -> list[Entry]:
         return list(self._entries.values())
 

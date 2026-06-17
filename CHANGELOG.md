@@ -25,6 +25,12 @@ flow, plus three new top-level features:
   track can be in multiple playlists; each membership becomes a real
   file copy on the SD card (FAT32/exFAT lack hardlinks/symlinks). Push
   is incremental with prune-on-removal.
+- **Library deletion** — right-click a track, album, or artist in the
+  Library tab to delete it from disk. Bulk "Empty library…" button with
+  two-step confirmation wipes every Artist folder under the loaded
+  root, preserving the manifest, FiiO info files, and Playlists/. Only
+  ever operates on the path you've loaded — the Echo's internal flash
+  is unreachable from the host anyway.
 - **YouTube downloader** — feed a song list to the Download tab (or
   `./build_library.py download --list ...`); each line is enriched via
   MusicBrainz and landed in the source tree as a tagged FLAC ready for

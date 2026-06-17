@@ -370,7 +370,7 @@ echo-library-builder/
 │   ├── main.py             # QApplication + tabbed main window
 │   ├── download_tab.py     # song-list picker + per-song status
 │   ├── build_tab.py        # source/output pickers + per-file progress
-│   ├── library_tab.py      # tree view + favorite/playlist columns
+│   ├── library_tab.py      # tree view + favorite/playlist columns + delete actions
 │   ├── playlists_tab.py    # manage playlist membership + push to card
 │   ├── device_tab.py       # SD card picker + push/pull favorites
 │   ├── workers.py          # QRunnable wrapper around the CLI's job pipeline

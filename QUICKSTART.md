@@ -192,7 +192,7 @@ A single-window app opens with five tabs:
 
 - **Download** — point at a song list and a destination, watch each row enrich (MusicBrainz) and fetch (yt-dlp) live. Falls through to the Build tab when finished.
 - **Build** — same options as the CLI's `build` command, plus a live per-file progress table. Dry-run first if you want a preview.
-- **Library** — tree view of the output. Click the star column to mark a track favorite, right-click for an "Add to playlist" menu. Choices are saved in the manifest and survive rebuilds.
+- **Library** — tree view of the output. Click the star column to mark a track favorite, right-click for "Add to playlist" / "Delete track" / "Delete album" / "Delete artist". The destructive actions delete on disk under whatever folder you've loaded, never the Echo's internal flash. The red "Empty library…" button at the top wipes every artist folder under the loaded root, two-step confirmation, preserves the manifest + FiiO info files + any Playlists/ folder. Useful for clearing the SD card before a fresh push.
 - **Playlists** — manage playlist membership (left pane: playlists, right pane: tracks). One-click "Push to card" copies tracks to `<SD>/Playlists/<Name>/` for folder-as-playlist playback on the Echo. Songs can be in multiple playlists at once (separate copies on the card).
 - **Device** — point at the SD card, export your favorites as `Favorites.m3u`, or try to pull what's on the card (best-effort — FiiO doesn't publish the format).
 

@@ -69,6 +69,26 @@ class LibraryTab(QWidget):
         row.addWidget(self.cancel_btn)
         outer.addLayout(row)
 
+        # Destructive actions row — kept visible but red-tinted to remind
+        # the user this writes to disk.
+        danger_row = QHBoxLayout()
+        danger_row.addWidget(QLabel("Library actions:"))
+        self.empty_btn = QPushButton("Empty library…")
+        self.empty_btn.setStyleSheet(
+            "QPushButton { color: #b00; } QPushButton:disabled { color: #777; }"
+        )
+        self.empty_btn.setToolTip(
+            "Delete every audio file under the loaded library root. "
+            "Preserves the manifest, cover.jpgs, and non-music files "
+            "(System Volume Information, FiiO info text, Trash). "
+            "Only operates on whatever path you've loaded — never touches "
+            "the device's internal storage."
+        )
+        self.empty_btn.clicked.connect(self._empty_library)
+        danger_row.addWidget(self.empty_btn)
+        danger_row.addStretch()
+        outer.addLayout(danger_row)
+
         self.progress = QProgressBar()
         self.progress.setRange(0, 1)
         self.progress.setValue(0)
@@ -181,6 +201,7 @@ class LibraryTab(QWidget):
     def _on_scan_track(self, payload: dict) -> None:
         artist = payload["artist"]
         album = payload["album"]
+        track_path = Path(payload["path"])
 
         artist_item = self._artists.get(artist)
         if artist_item is None:
@@ -188,6 +209,9 @@ class LibraryTab(QWidget):
             self.tree.addTopLevelItem(artist_item)
             self._artists[artist] = artist_item
             artist_item.setExpanded(True)
+            # Store the artist folder path so delete-artist can target it.
+            artist_item.setData(0, Qt.ItemDataRole.UserRole + 1,
+                                str(track_path.parent.parent))
 
         album_key = (artist, album)
         album_item = self._albums.get(album_key)
@@ -195,6 +219,8 @@ class LibraryTab(QWidget):
             album_item = QTreeWidgetItem([album, "", "", "", ""])
             artist_item.addChild(album_item)
             self._albums[album_key] = album_item
+            album_item.setData(0, Qt.ItemDataRole.UserRole + 1,
+                               str(track_path.parent))
 
         playlists_str = ", ".join(payload["playlists"])
         track_item = QTreeWidgetItem([
@@ -277,25 +303,50 @@ class LibraryTab(QWidget):
         item = self.tree.itemAt(pos)
         if item is None:
             return
-        target = item.data(0, Qt.ItemDataRole.UserRole)
-        if not target or not self._manifest:
-            return  # not a track row
-        target_path = Path(target)
-
         menu = QMenu(self)
+
+        target = item.data(0, Qt.ItemDataRole.UserRole)
+        if target:
+            # Track row — playlist actions + delete track
+            target_path = Path(target)
+            self._append_playlist_actions(menu, target_path)
+            menu.addSeparator()
+            del_action = QAction("Delete track", self)
+            del_action.triggered.connect(
+                lambda: self._delete_tracks([target_path]))
+            menu.addAction(del_action)
+        else:
+            # Artist or album row — delete folder
+            folder = item.data(0, Qt.ItemDataRole.UserRole + 1)
+            if folder:
+                level = "album" if item.parent() else "artist"
+                count = self._count_descendant_tracks(item)
+                del_action = QAction(
+                    f"Delete {level} ({count} track{'s' if count != 1 else ''})",
+                    self,
+                )
+                del_action.triggered.connect(
+                    lambda: self._delete_folder(Path(folder), item))
+                menu.addAction(del_action)
+
+        if menu.actions():
+            menu.exec(self.tree.viewport().mapToGlobal(pos))
+
+    def _append_playlist_actions(self, menu, target_path: Path) -> None:
+        if not self._manifest:
+            return
         existing_playlists = self._manifest.playlist_names()
         current = set(self._playlists_for(target_path))
 
         if existing_playlists:
             add_menu = menu.addMenu("Add to playlist")
-            for name in existing_playlists:
-                if name in current:
-                    continue
+            available = [n for n in existing_playlists if n not in current]
+            for name in available:
                 action = QAction(name, self)
                 action.triggered.connect(
                     lambda _, n=name: self._toggle_playlist(target_path, n, True))
                 add_menu.addAction(action)
-            if not any(n for n in existing_playlists if n not in current):
+            if not available:
                 stub = QAction("(already in all)", self)
                 stub.setEnabled(False)
                 add_menu.addAction(stub)
@@ -308,13 +359,189 @@ class LibraryTab(QWidget):
                         lambda _, n=name: self._toggle_playlist(target_path, n, False))
                     remove_menu.addAction(action)
 
-            menu.addSeparator()
-
         new_action = QAction("New playlist with this track…", self)
         new_action.triggered.connect(lambda: self._new_playlist_with(target_path))
         menu.addAction(new_action)
 
-        menu.exec(self.tree.viewport().mapToGlobal(pos))
+    @staticmethod
+    def _count_descendant_tracks(item: QTreeWidgetItem) -> int:
+        if item.childCount() == 0:
+            return 1 if item.data(0, Qt.ItemDataRole.UserRole) else 0
+        n = 0
+        for i in range(item.childCount()):
+            n += LibraryTab._count_descendant_tracks(item.child(i))
+        return n
+
+    def _delete_tracks(self, paths: list[Path]) -> None:
+        if not self._output_dir:
+            return
+        if not paths:
+            return
+        msg = (
+            f"Delete {len(paths)} file{'s' if len(paths) != 1 else ''} "
+            f"from {self._output_dir}?\n\n"
+            "This deletes the audio file(s) on disk; the device's internal "
+            "Favorites list (in its flash) is not touched."
+        )
+        reply = QMessageBox.question(
+            self, "Delete tracks", msg,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        removed = 0
+        manifest_dirty = False
+        for path in paths:
+            try:
+                path.unlink()
+                removed += 1
+            except OSError as e:
+                QMessageBox.warning(self, "Delete failed", f"{path}: {e}")
+                continue
+            if self._manifest and self._manifest.path.exists():
+                if self._manifest.forget_target(path) > 0:
+                    manifest_dirty = True
+
+        if manifest_dirty:
+            self._manifest.save()
+
+        self._reload()
+        self.status.setText(f"Deleted {removed} track(s).")
+
+    def _empty_library(self) -> None:
+        """Wipe every audio file under the loaded library root, plus the
+        Artist/Album folder structure. Preserves the manifest itself, FiiO
+        info text files, .Trash-1000, and System Volume Information."""
+        if not self._output_dir:
+            QMessageBox.warning(self, "No library loaded",
+                                "Load a library root first.")
+            return
+
+        root = self._output_dir
+        from src.manifest import MANIFEST_NAME
+
+        # Pick out only the top-level directories that look like Artist/
+        # folders — i.e., they have at least one Album/Track shape below
+        # them. Don't touch top-level files or directories that don't
+        # match the layout.
+        artist_dirs: list[Path] = []
+        for child in root.iterdir():
+            if not child.is_dir():
+                continue
+            if child.name in (".Trash-1000", "System Volume Information",
+                              "Playlists"):
+                continue
+            # Has at least one audio file inside (somewhere)? Then treat
+            # it as an Artist folder.
+            if any(
+                p.suffix.lower() in (".flac", ".mp3", ".m4a", ".ogg",
+                                     ".wav", ".ape", ".dsf")
+                for p in child.rglob("*")
+            ):
+                artist_dirs.append(child)
+
+        if not artist_dirs:
+            QMessageBox.information(
+                self, "Already empty",
+                f"No Artist/Album folders found under {root}.",
+            )
+            return
+
+        track_count = sum(
+            sum(1 for p in d.rglob("*")
+                if p.suffix.lower() in (".flac", ".mp3", ".m4a", ".ogg",
+                                        ".wav", ".ape", ".dsf"))
+            for d in artist_dirs
+        )
+
+        # Two-step confirmation. First a Yes/No, then a typed phrase, so
+        # an accidental Enter on the first dialog doesn't wipe the card.
+        first = QMessageBox.warning(
+            self, "Empty library?",
+            f"This will delete:\n\n"
+            f"  • {track_count} audio files\n"
+            f"  • {len(artist_dirs)} artist folders under {root}\n\n"
+            "Preserved:\n"
+            f"  • {MANIFEST_NAME} (so your favorite/playlist marks survive)\n"
+            "  • Top-level files (FiiO info .txt, etc.)\n"
+            "  • System Volume Information, .Trash-1000\n"
+            "  • Playlists/ folder (use Playlists tab to clear those)\n\n"
+            "The Echo's internal Favorites list in its flash is NOT touched.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if first != QMessageBox.StandardButton.Yes:
+            return
+
+        phrase, ok = QInputDialog.getText(
+            self, "Confirm empty",
+            f"Type EMPTY to wipe {len(artist_dirs)} folders from {root}:",
+        )
+        if not ok or phrase.strip() != "EMPTY":
+            self.status.setText("Empty cancelled.")
+            return
+
+        import shutil
+        failed: list[tuple[Path, str]] = []
+        for d in artist_dirs:
+            try:
+                shutil.rmtree(d)
+            except OSError as e:
+                failed.append((d, str(e)))
+
+        if self._manifest and self._manifest.path.exists():
+            # Drop every entry whose target is under this root.
+            self._manifest.forget_targets_under(root)
+            self._manifest.save()
+
+        if failed:
+            QMessageBox.warning(
+                self, "Some deletes failed",
+                "Couldn't delete:\n" + "\n".join(f"  {p}: {e}"
+                                                  for p, e in failed[:10]),
+            )
+
+        self._reload()
+        msg = f"Emptied {len(artist_dirs) - len(failed)}/{len(artist_dirs)} folders."
+        self.status.setText(msg)
+
+    def _delete_folder(self, folder: Path, tree_item: QTreeWidgetItem) -> None:
+        if not self._output_dir:
+            return
+        if folder == self._output_dir or self._output_dir not in folder.parents:
+            QMessageBox.critical(
+                self, "Refusing to delete",
+                f"{folder} isn't strictly inside the loaded library "
+                f"({self._output_dir}). Refusing.",
+            )
+            return
+        import shutil
+        count = self._count_descendant_tracks(tree_item)
+        msg = (
+            f"Delete the folder\n  {folder}\nand all {count} track"
+            f"{'s' if count != 1 else ''} inside it?\n\n"
+            "Only files on this SD card / local library are affected — the "
+            "Echo's internal Favorites list is not touched."
+        )
+        reply = QMessageBox.question(
+            self, "Delete folder", msg,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            shutil.rmtree(folder)
+        except OSError as e:
+            QMessageBox.warning(self, "Delete failed", f"{folder}: {e}")
+            return
+        if self._manifest and self._manifest.path.exists():
+            self._manifest.forget_targets_under(folder)
+            self._manifest.save()
+        self._reload()
+        self.status.setText(f"Deleted {folder.name} ({count} tracks).")
 
     def _toggle_playlist(self, target: Path, name: str, add: bool) -> None:
         if not self._manifest:
