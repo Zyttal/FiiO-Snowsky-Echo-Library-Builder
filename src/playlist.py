@@ -48,10 +48,20 @@ def push_playlist(
     sd_root: Path,
     cfg: Config,
     prune: bool = True,
+    progress_callback=None,
+    cancel_check=None,
 ) -> PushReport:
     """Copy every track in `source_tracks` to
     <sd_root>/Playlists/<sanitized_name>/NN - Title.flac, renumbering
     sequentially in the order received.
+
+    `progress_callback`, when supplied, is invoked as
+    callback(index, total, status, target_name) after each track is
+    processed. `status` is one of "copied", "skipped", "missing", and
+    `target_name` is the on-card filename so the GUI can show it.
+
+    `cancel_check`, when supplied, is a callable that returns True if
+    the push should abort. Checked before each track copy.
 
     Returns a PushReport summarising what changed."""
     sd_root = sd_root.resolve()
@@ -61,10 +71,15 @@ def push_playlist(
     report = PushReport(playlist=playlist_name, target_dir=target_dir)
 
     expected_targets: set[Path] = set()
+    total = len(source_tracks)
 
     for index, src in enumerate(source_tracks, start=1):
+        if cancel_check and cancel_check():
+            return report
         if not src.exists():
             report.missing_sources.append(src)
+            if progress_callback:
+                progress_callback(index, total, "missing", src.name)
             continue
         # Strip the leading "NN - " from the source filename so we can
         # re-number it for this playlist's order. If the source doesn't
@@ -77,9 +92,13 @@ def push_playlist(
 
         if _up_to_date(src, target):
             report.skipped_up_to_date.append(target)
+            status = "skipped"
         else:
             shutil.copy2(src, target)
             report.copied.append(target)
+            status = "copied"
+        if progress_callback:
+            progress_callback(index, total, status, target_name)
 
     # Drop a cover.jpg from the first source's parent if one exists.
     if source_tracks:

@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMessageBox,
+    QProgressBar,
     QPushButton,
     QSplitter,
     QVBoxLayout,
@@ -59,17 +60,30 @@ class PlaylistsTab(QWidget):
         self.del_btn = QPushButton("Delete playlist")
         self.push_one_btn = QPushButton("Push selected to card")
         self.push_all_btn = QPushButton("Push all to card")
+        self.cancel_push_btn = QPushButton("Cancel push")
+        self.cancel_push_btn.setEnabled(False)
         self.reload_btn = QPushButton("Reload")
         self.new_btn.clicked.connect(self._new_playlist)
         self.del_btn.clicked.connect(self._delete_playlist)
         self.push_one_btn.clicked.connect(lambda: self._push(all_playlists=False))
         self.push_all_btn.clicked.connect(lambda: self._push(all_playlists=True))
+        self.cancel_push_btn.clicked.connect(self._cancel_push)
         self.reload_btn.clicked.connect(self._reload)
         for b in (self.new_btn, self.del_btn, self.push_one_btn,
-                  self.push_all_btn, self.reload_btn):
+                  self.push_all_btn, self.cancel_push_btn, self.reload_btn):
             actions.addWidget(b)
         actions.addStretch()
         outer.addLayout(actions)
+
+        # Push progress strip — hidden until a push is running.
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 1)
+        self.progress.setValue(0)
+        self.progress.setVisible(False)
+        outer.addWidget(self.progress)
+        self.push_status = QLabel("")
+        self.push_status.setVisible(False)
+        outer.addWidget(self.push_status)
 
         # Caveat
         caveat = QLabel(
@@ -234,12 +248,36 @@ class PlaylistsTab(QWidget):
         cfg = config_mod.load(cfg_path)
 
         self._set_running(True)
+        self.progress.setVisible(True)
+        self.progress.setRange(0, 0)  # busy indicator until first playlist_started
+        self.push_status.setVisible(True)
+        self.push_status.setText("Starting push…")
         self._runner = PlaylistPushRunner(
             self._library_root, sd_root, names, cfg.__dict__,
         )
+        self._runner.signals.playlist_started.connect(self._on_playlist_started)
+        self._runner.signals.track_progress.connect(self._on_track_progress)
         self._runner.signals.playlist_done.connect(self._on_playlist_done)
         self._runner.signals.finished.connect(self._on_push_finished)
+        self._runner.signals.cancelled.connect(self._on_push_cancelled)
         self.pool.start(self._runner)
+
+    def _cancel_push(self) -> None:
+        if self._runner is not None:
+            self._runner.cancel()
+            self.push_status.setText("Cancelling…")
+
+    def _on_playlist_started(self, name: str, total: int) -> None:
+        self.progress.setRange(0, max(total, 1))
+        self.progress.setValue(0)
+        self.push_status.setText(f"'{name}': 0/{total}")
+
+    def _on_track_progress(self, name: str, idx: int, total: int,
+                           status: str, filename: str) -> None:
+        self.progress.setValue(idx)
+        verb = {"copied": "copied", "skipped": "skipped (up-to-date)",
+                "missing": "MISSING source"}.get(status, status)
+        self.push_status.setText(f"'{name}': {idx}/{total} — {verb}: {filename}")
 
     def _on_playlist_done(self, payload: dict) -> None:
         self.status.setText(
@@ -250,8 +288,19 @@ class PlaylistsTab(QWidget):
                if payload["missing"] else "")
         )
 
+    def _on_push_cancelled(self) -> None:
+        self._set_running(False)
+        self.progress.setVisible(False)
+        self.push_status.setVisible(False)
+        self._runner = None
+        QMessageBox.information(self, "Push cancelled",
+                                "Stopped before finishing all playlists.")
+
     def _on_push_finished(self, total_playlists: int) -> None:
         self._set_running(False)
+        self.progress.setVisible(False)
+        self.push_status.setVisible(False)
+        self._runner = None
         QMessageBox.information(
             self, "Push complete",
             f"Pushed {total_playlists} playlist(s) to the SD card.")
@@ -260,6 +309,7 @@ class PlaylistsTab(QWidget):
         for b in (self.new_btn, self.del_btn, self.push_one_btn,
                   self.push_all_btn, self.reload_btn):
             b.setEnabled(not running)
+        self.cancel_push_btn.setEnabled(running)
 
 
 def _row_with_picker(label: str, attr: str, browse_handler,

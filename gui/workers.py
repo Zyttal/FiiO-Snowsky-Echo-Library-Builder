@@ -109,16 +109,18 @@ class BuildRunner(QRunnable):
 
 
 class PlaylistPushSignals(QObject):
-    playlist_done = Signal(dict)        # {name, copied, up_to_date, pruned, missing}
-    finished = Signal(int)              # total playlists pushed
+    playlist_started = Signal(str, int)    # name, total tracks
+    track_progress = Signal(str, int, int, str, str)  # name, index, total, status, filename
+    playlist_done = Signal(dict)           # {name, copied, up_to_date, pruned, missing}
+    finished = Signal(int)                 # total playlists pushed
+    cancelled = Signal()
 
 
 class PlaylistPushRunner(QRunnable):
     """Push one or more playlists to the SD card on a background thread.
 
-    Each playlist's copy step is sequential (we're network-I/O-bound on
-    SD writes anyway and the per-track shutil.copy2 already saturates a
-    typical card)."""
+    Each playlist's copy step is sequential (we're I/O-bound on SD writes
+    anyway and per-track shutil.copy2 already saturates a typical card)."""
 
     def __init__(self, library_root: Path, sd_root: Path,
                  names: list[str], cfg_dict: dict) -> None:
@@ -128,6 +130,10 @@ class PlaylistPushRunner(QRunnable):
         self.names = names
         self.cfg_dict = cfg_dict
         self.signals = PlaylistPushSignals()
+        self._cancel = False
+
+    def cancel(self) -> None:
+        self._cancel = True
 
     def run(self) -> None:
         from src import config as config_mod
@@ -138,11 +144,27 @@ class PlaylistPushRunner(QRunnable):
         manifest = Manifest(self.library_root / MANIFEST_NAME)
         pushed = 0
         for name in self.names:
+            if self._cancel:
+                self.signals.cancelled.emit()
+                return
             entries = manifest.playlist_entries(name)
             if not entries:
                 continue
             tracks = [Path(e.target) for e in entries]
-            report = push_playlist(name, tracks, self.sd_root, cfg, prune=True)
+            self.signals.playlist_started.emit(name, len(tracks))
+
+            def emit_progress(idx, total, status, filename, _name=name):
+                self.signals.track_progress.emit(
+                    _name, idx, total, status, filename)
+
+            report = push_playlist(
+                name, tracks, self.sd_root, cfg, prune=True,
+                progress_callback=emit_progress,
+                cancel_check=lambda: self._cancel,
+            )
+            if self._cancel:
+                self.signals.cancelled.emit()
+                return
             self.signals.playlist_done.emit({
                 "name": name,
                 "copied": len(report.copied),
