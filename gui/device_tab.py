@@ -126,9 +126,9 @@ class DeviceTab(QWidget):
         if not report.any_source_found:
             self.status.setText(
                 "No favorites file found on the SD card. The Echo keeps its "
-                "internal Favorites in flash (not on the card), so Pull only "
-                "surfaces files written by Push or by another tool. Use Push "
-                "to export one."
+                "internal Favorites in flash (not on the card), so this probe "
+                "only surfaces files we (or another tool) have written. Click "
+                "\"Export favorites as .m3u backup\" above to create one."
             )
             return
 
@@ -146,10 +146,10 @@ class DeviceTab(QWidget):
                 self.list.addItem(QListWidgetItem(f"({p}) — empty"))
             self.status.setText(
                 f"Found {src_str} on the card but with zero track entries. "
-                "Almost always: a previous Push ran with the SD card pointing "
+                "Almost always: a previous Export ran with the SD card pointing "
                 "at a folder that didn't already contain your library, so "
                 "every track got skipped. Copy your library to the card "
-                "(rsync) and re-run Push."
+                "(rsync) and re-run Export."
             )
             return
 
@@ -214,7 +214,7 @@ class DeviceTab(QWidget):
                 "  1. rsync your Echo-Library tree to the SD card\n"
                 "  2. Point this tab at <SD card>/Music/ (or wherever the "
                 "library landed on the card)\n"
-                "  3. Push again",
+                "  3. Click Export again",
             )
             return
 
