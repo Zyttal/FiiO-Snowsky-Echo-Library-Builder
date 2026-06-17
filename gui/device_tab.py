@@ -216,7 +216,12 @@ class DeviceTab(QWidget):
         # canonical one in the manifest. Fall back to any format if no FLAC
         # favorites exist. (The Echo can't play the .m3u directly anyway;
         # this just affects which paths land in the backup.)
-        favs = manifest.favorites(fmt="flac") or manifest.favorites()
+        # No format filter — manifest entries are keyed by (source, fmt)
+        # but the favorite bit lives on whichever entry is in the
+        # manifest. In preserve mode that's fmt="preserve"; in fixed-
+        # format mode it's "flac"/"mp3"/etc. Querying without a filter
+        # covers all of them.
+        favs = manifest.favorites()
         if not favs:
             QMessageBox.information(
                 self, "No favorites",

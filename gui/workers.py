@@ -138,7 +138,7 @@ class PlaylistPushRunner(QRunnable):
         manifest = Manifest(self.library_root / MANIFEST_NAME)
         pushed = 0
         for name in self.names:
-            entries = manifest.playlist_entries(name, fmt="flac")
+            entries = manifest.playlist_entries(name)
             if not entries:
                 continue
             tracks = [Path(e.target) for e in entries]

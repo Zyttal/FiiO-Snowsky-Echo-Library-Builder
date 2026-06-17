@@ -136,7 +136,7 @@ class PlaylistsTab(QWidget):
         self.playlist_list.clear()
         self.track_list.clear()
         for name in names:
-            count = len(manifest.playlist_entries(name, fmt="flac"))
+            count = len(manifest.playlist_entries(name))
             self.playlist_list.addItem(QListWidgetItem(f"{name}  ({count})"))
         if names:
             self.playlist_list.setCurrentRow(0)
@@ -153,7 +153,7 @@ class PlaylistsTab(QWidget):
         name = item.text().rsplit("  (", 1)[0]
         manifest = Manifest(self._library_root / MANIFEST_NAME)
         self.track_list.clear()
-        for entry in manifest.playlist_entries(name, fmt="flac"):
+        for entry in manifest.playlist_entries(name):
             self.track_list.addItem(QListWidgetItem(Path(entry.target).name))
 
     def _new_playlist(self) -> None:

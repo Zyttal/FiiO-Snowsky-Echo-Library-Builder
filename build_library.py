@@ -683,7 +683,7 @@ def playlist_list(output_dir, name):
     """List playlists (or the contents of one)."""
     manifest = Manifest(output_dir.resolve() / MANIFEST_NAME)
     if name:
-        entries = manifest.playlist_entries(name, fmt="flac")
+        entries = manifest.playlist_entries(name)
         if not entries:
             click.echo(f"Playlist '{name}' is empty or doesn't exist.")
             return
@@ -696,7 +696,7 @@ def playlist_list(output_dir, name):
         click.echo("No playlists yet. Use `playlist add` to start one.")
         return
     for n in names:
-        count = len(manifest.playlist_entries(n, fmt="flac"))
+        count = len(manifest.playlist_entries(n))
         click.echo(f"  {n}  ({count} tracks)")
 
 
@@ -731,7 +731,7 @@ def playlist_push(output_dir, sd_root, name, prune, config_path):
         return
 
     for pl in targets:
-        entries = manifest.playlist_entries(pl, fmt="flac")
+        entries = manifest.playlist_entries(pl)
         if not entries:
             click.echo(f"  '{pl}': empty, skipped.")
             continue
