@@ -30,3 +30,10 @@ workers: null                  # null = CPU count - 1.
 # default_genre: "Unknown"     # If a source track has no GENRE tag, write this
                                # one instead. Without this, the Echo shows
                                # "Unknown" for any source missing the field.
+
+# YouTube downloader output format
+# passthrough = no re-encode, keep source codec (m4a or opus from YouTube).
+#               Smallest file. FiiO Echo plays both natively.
+# m4a         = re-encode every download to AAC m4a (codec uniformity).
+# flac        = wrap lossy source in lossless FLAC container (v0.1.0 behavior).
+download_audio_format: passthrough

@@ -27,6 +27,12 @@ class Config:
     workers: int | None = None
     default_genre: str | None = None
     enrich_tags_via_musicbrainz: bool = False
+    # YouTube downloader output format. "passthrough" (default) keeps the
+    # source codec yt-dlp grabbed (typically AAC m4a or Opus) — no re-encode,
+    # smallest file, full FiiO Echo compatibility. "m4a" re-encodes everything
+    # to AAC m4a for codec uniformity. "flac" wraps the lossy source in a
+    # FLAC container (v0.1.0 behavior, kept for users who want uniform .flac).
+    download_audio_format: str = "passthrough"
 
     def resolved_workers(self) -> int:
         if self.workers is not None:

@@ -233,6 +233,41 @@ def write_m4a(target: Path, tags: SourceTags, picture_bytes: bytes | None) -> No
     audio.save()
 
 
+def write_opus(target: Path, tags: SourceTags, picture_bytes: bytes | None) -> None:
+    """Write Vorbis comments on an Ogg Opus file. Cover art uses the
+    same METADATA_BLOCK_PICTURE convention as FLAC, base64-encoded. Used
+    for YouTube passthrough output (yt-dlp remuxes webm/opus → .opus)."""
+    import base64
+    from mutagen.oggopus import OggOpus
+    audio = OggOpus(target)
+    if audio.tags is None:
+        audio.add_tags()
+    audio.tags.clear()
+    audio.tags["ARTIST"] = tags.artist
+    audio.tags["ALBUM"] = tags.album
+    audio.tags["TITLE"] = tags.title
+    if tags.track_no is not None:
+        audio.tags["TRACKNUMBER"] = str(tags.track_no)
+    if tags.disc_no is not None:
+        audio.tags["DISCNUMBER"] = str(tags.disc_no)
+    if tags.date:
+        audio.tags["DATE"] = tags.date
+    if tags.genre:
+        audio.tags["GENRE"] = tags.genre
+    if tags.album_artist:
+        audio.tags["ALBUMARTIST"] = tags.album_artist
+    if picture_bytes:
+        pic = Picture()
+        pic.type = 3
+        pic.mime = "image/jpeg"
+        pic.desc = "Cover"
+        pic.data = picture_bytes
+        audio.tags["METADATA_BLOCK_PICTURE"] = [
+            base64.b64encode(pic.write()).decode("ascii"),
+        ]
+    audio.save()
+
+
 def write_ogg(target: Path, tags: SourceTags, picture_bytes: bytes | None) -> None:
     """Write Vorbis comments on an OGG Vorbis file. Cover art uses the
     same METADATA_BLOCK_PICTURE convention as FLAC, base64-encoded."""
@@ -275,6 +310,7 @@ _WRITERS = {
     "m4a": write_m4a,
     "mp4": write_m4a,
     "ogg": write_ogg,
+    "opus": write_opus,
 }
 
 

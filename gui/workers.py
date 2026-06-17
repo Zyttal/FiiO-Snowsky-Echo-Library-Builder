@@ -186,9 +186,21 @@ class EnrichmentSignals(QObject):
     cancelled = Signal()
 
 
+def is_mb_shaped(src_tags: dict) -> bool:
+    """A track is 'MB-shaped' when MusicBrainz has nothing left to fill
+    in: album, date, genre, and album_artist are all set. Downloader-
+    produced tracks satisfy this; raw rips usually don't."""
+    return bool(
+        src_tags.get("album")
+        and src_tags.get("date")
+        and src_tags.get("genre")
+        and src_tags.get("album_artist")
+    )
+
+
 class TagEnrichmentRunner(QRunnable):
     """Walk a list of (index, SourceTags) pairs through MusicBrainz and
-    fill in missing genre. Runs sequentially because MusicBrainz's 1-req
+    fill in missing fields. Runs sequentially because MusicBrainz's 1-req
     /sec rate limit makes parallelism pointless.
 
     Inputs are plain dicts (the SourceTags __dict__) so this is safe to
@@ -219,8 +231,9 @@ class TagEnrichmentRunner(QRunnable):
             label = f"{src_tags.get('artist', '?')} - {src_tags.get('title', '?')}"
             self.signals.progress.emit(i, label)
 
-            # Skip items that don't need enrichment.
-            if src_tags.get("genre"):
+            # Defense in depth — build_tab pre-filters MB-shaped items,
+            # but if a caller skips that filter we still skip the lookup.
+            if is_mb_shaped(src_tags):
                 continue
 
             key = (
