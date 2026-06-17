@@ -7,8 +7,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QThreadPool, Signal
-from PySide6.QtGui import QAction
+from PySide6.QtCore import QSize, Qt, QThreadPool, Signal
+from PySide6.QtGui import QAction, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QFileDialog,
@@ -27,7 +27,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from gui.workers import LibraryScanRunner
+from gui.workers import LibraryScanRunner, LyricsRunner
 
 
 class LibraryTab(QWidget):
@@ -35,20 +35,25 @@ class LibraryTab(QWidget):
     playlists_changed = Signal()
 
     COL_NAME = 0
-    COL_FAV = 1
-    COL_GENRE = 2
-    COL_YEAR = 3
-    COL_FORMAT = 4
-    COL_BITRATE = 5
-    COL_DURATION = 6
-    COL_PLAYLISTS = 7
-    COLUMN_COUNT = 8
+    COL_ALBUM = 1
+    COL_FAV = 2
+    COL_GENRE = 3
+    COL_YEAR = 4
+    COL_FORMAT = 5
+    COL_BITRATE = 6
+    COL_DURATION = 7
+    COL_PLAYLISTS = 8
+    COLUMN_COUNT = 9
+    # Thumbnail target side-length on the leftmost cell. Qt scales the
+    # cached pixmap down to this when rendering the row.
+    THUMB_PX = 36
 
     def __init__(self) -> None:
         super().__init__()
         self._output_dir: Path | None = None
         self._manifest = None  # src.manifest.Manifest, set on load
         self._scan: LibraryScanRunner | None = None
+        self._lyrics_runner: LyricsRunner | None = None
         self._pool = QThreadPool.globalInstance()
         self._artists: dict[str, QTreeWidgetItem] = {}
         self._albums: dict[tuple[str, str], QTreeWidgetItem] = {}
@@ -91,6 +96,16 @@ class LibraryTab(QWidget):
         )
         self.empty_btn.clicked.connect(self._empty_library)
         danger_row.addWidget(self.empty_btn)
+        self.lyrics_btn = QPushButton("Fetch lyrics")
+        self.lyrics_btn.setToolTip(
+            "For every track in the loaded library, query LRCLIB and drop "
+            "a <track>.lrc sidecar next to the audio. Free public API, no "
+            "key required. Skips tracks that already have a sidecar. "
+            "Echo and other DAPs that read .lrc files display the synced "
+            "lyrics on playback."
+        )
+        self.lyrics_btn.clicked.connect(self._fetch_lyrics)
+        danger_row.addWidget(self.lyrics_btn)
         danger_row.addStretch()
         outer.addLayout(danger_row)
 
@@ -103,15 +118,20 @@ class LibraryTab(QWidget):
         self.tree = QTreeWidget()
         self.tree.setColumnCount(self.COLUMN_COUNT)
         self.tree.setHeaderLabels([
-            "Artist / Album / Track", "Favorite", "Genre", "Year",
+            "Artist / Album / Track", "Album", "Favorite", "Genre", "Year",
             "Format", "Bitrate", "Duration", "Playlists",
         ])
         self.tree.header().setSectionResizeMode(self.COL_NAME, QHeaderView.ResizeMode.Stretch)
+        self.tree.header().setSectionResizeMode(self.COL_ALBUM, QHeaderView.ResizeMode.ResizeToContents)
         for col in (self.COL_FAV, self.COL_GENRE, self.COL_YEAR,
                     self.COL_FORMAT, self.COL_BITRATE, self.COL_DURATION,
                     self.COL_PLAYLISTS):
             self.tree.header().setSectionResizeMode(
                 col, QHeaderView.ResizeMode.ResizeToContents)
+        self.tree.setIconSize(QSize(self.THUMB_PX, self.THUMB_PX))
+        # In-memory per-album thumbnail cache so a 30-track album decodes
+        # its cover once, not 30 times. Keyed by album folder path.
+        self._album_thumbs: dict[str, "QIcon"] = {}
         self.tree.itemChanged.connect(self._on_item_changed)
         self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.tree.customContextMenuRequested.connect(self._on_context_menu)
@@ -214,6 +234,7 @@ class LibraryTab(QWidget):
         artist = payload["artist"]
         album = payload["album"]
         track_path = Path(payload["path"])
+        album_dir = str(track_path.parent)
 
         artist_item = self._artists.get(artist)
         if artist_item is None:
@@ -228,15 +249,20 @@ class LibraryTab(QWidget):
         album_key = (artist, album)
         album_item = self._albums.get(album_key)
         if album_item is None:
-            album_item = QTreeWidgetItem([album] + [""] * (self.COLUMN_COUNT - 1))
+            row = [album] + [""] * (self.COLUMN_COUNT - 1)
+            row[self.COL_ALBUM] = album
+            album_item = QTreeWidgetItem(row)
             artist_item.addChild(album_item)
             self._albums[album_key] = album_item
-            album_item.setData(0, Qt.ItemDataRole.UserRole + 1,
-                               str(track_path.parent))
+            album_item.setData(0, Qt.ItemDataRole.UserRole + 1, album_dir)
+            icon = self._album_icon(album_dir, payload.get("cover_bytes"))
+            if icon is not None:
+                album_item.setIcon(self.COL_NAME, icon)
 
         playlists_str = ", ".join(payload["playlists"])
-        track_item = QTreeWidgetItem([
+        row = [
             payload["filename"],
+            album,
             "",
             payload["genre"],
             payload.get("year", ""),
@@ -244,15 +270,39 @@ class LibraryTab(QWidget):
             payload["bitrate"],
             payload.get("duration", ""),
             playlists_str,
-        ])
+        ]
+        track_item = QTreeWidgetItem(row)
         track_item.setCheckState(
             self.COL_FAV,
             Qt.CheckState.Checked if payload["favorite"]
             else Qt.CheckState.Unchecked,
         )
         track_item.setData(0, Qt.ItemDataRole.UserRole, payload["path"])
+        icon = self._album_icon(album_dir, payload.get("cover_bytes"))
+        if icon is not None:
+            track_item.setIcon(self.COL_NAME, icon)
         album_item.addChild(track_item)
         self.progress.setValue(self.progress.value() + 1)
+
+    def _album_icon(self, album_dir: str, cover_bytes: bytes | None) -> QIcon | None:
+        """Return a cached QIcon for the album's cover, or None when no
+        cover is available. Decoded once per album folder."""
+        cached = self._album_thumbs.get(album_dir)
+        if cached is not None:
+            return cached
+        if not cover_bytes:
+            return None
+        pm = QPixmap()
+        if not pm.loadFromData(cover_bytes):
+            return None
+        scaled = pm.scaled(
+            self.THUMB_PX, self.THUMB_PX,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        icon = QIcon(scaled)
+        self._album_thumbs[album_dir] = icon
+        return icon
 
     def _on_scan_finished(self, count: int) -> None:
         self.tree.blockSignals(False)
@@ -283,6 +333,45 @@ class LibraryTab(QWidget):
     def _cancel_scan(self) -> None:
         if self._scan is not None:
             self._scan.cancel()
+
+    def _fetch_lyrics(self) -> None:
+        """Spawn LyricsRunner over the loaded library. Idempotent; skips
+        tracks that already have a sidecar."""
+        if self._output_dir is None:
+            QMessageBox.warning(self, "No library loaded",
+                                "Load a library first.")
+            return
+        if self._lyrics_runner is not None:
+            return
+        self.lyrics_btn.setEnabled(False)
+        self.status.setText("Lyrics: starting…")
+        self._lyrics_runner = LyricsRunner(self._output_dir, overwrite=False)
+        self._lyrics_runner.signals.started.connect(self._on_lyrics_started)
+        self._lyrics_runner.signals.progress.connect(self._on_lyrics_progress)
+        self._lyrics_runner.signals.finished.connect(self._on_lyrics_finished)
+        self._lyrics_runner.signals.error.connect(self._on_lyrics_error)
+        self._pool.start(self._lyrics_runner)
+
+    def _on_lyrics_started(self, total: int) -> None:
+        self.status.setText(f"Lyrics: 0/{total} tracks")
+
+    def _on_lyrics_progress(self, i: int, total: int, label: str) -> None:
+        self.status.setText(f"Lyrics: {i}/{total} — {label}")
+
+    def _on_lyrics_finished(self, fetched: int, skipped: int,
+                            misses: int, errors: int) -> None:
+        self.lyrics_btn.setEnabled(True)
+        self._lyrics_runner = None
+        msg = (f"{fetched} fetched, {skipped} already-present, "
+               f"{misses} no-match, {errors} errors")
+        self.status.setText(f"Lyrics done. {msg}.")
+        QMessageBox.information(self, "Lyrics done", msg)
+
+    def _on_lyrics_error(self, msg: str) -> None:
+        self.lyrics_btn.setEnabled(True)
+        self._lyrics_runner = None
+        QMessageBox.warning(self, "Lyrics error", msg)
+
 
     def _is_favorite(self, flac_path: Path) -> bool:
         if not self._manifest:

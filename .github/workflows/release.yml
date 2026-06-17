@@ -1,14 +1,19 @@
 name: Release
 
-# Cuts a GitHub Release whenever a v*.* tag is pushed. Each OS runner
-# builds its native installer artifact (AppImage / .dmg / .exe) using the
-# scripts in packaging/, then uploads the artifact to the release.
+# Triggers:
+#   - Push to master → build artifacts on all 3 OSes (no release cut).
+#     Useful as a nightly / merge-time smoke check that the installers
+#     still build. Artifacts land under the run's Artifacts section.
+#   - Push of a v*.*.* tag → same builds, plus the `release` job cuts a
+#     GitHub Release and attaches the installers.
 #
 # To cut a release:
-#   git tag v0.1.0
-#   git push origin v0.1.0
+#   git tag v0.1.5
+#   git push origin v0.1.5
 on:
   push:
+    branches:
+      - master
     tags:
       - 'v*.*.*'
 
@@ -77,6 +82,10 @@ jobs:
     name: Publish GitHub Release
     needs: build
     runs-on: ubuntu-latest
+    # Only cut a release when a v*.*.* tag is pushed. Pushes to master
+    # build artifacts via the `build` job above but stop short of a
+    # release — the artifacts are downloadable from the workflow run.
+    if: startsWith(github.ref, 'refs/tags/v')
     steps:
       - uses: actions/checkout@v4
 

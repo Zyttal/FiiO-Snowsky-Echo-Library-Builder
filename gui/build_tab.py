@@ -29,7 +29,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from gui.workers import BuildRunner, JobSpec, TagEnrichmentRunner
+from gui.workers import BuildRunner, JobSpec, TagEnrichmentRunner, is_mb_shaped
 
 
 class BuildTab(QWidget):
@@ -113,6 +113,18 @@ class BuildTab(QWidget):
             "when this is on."
         )
         outer.addWidget(self.enrich_check)
+        self.caa_check = QCheckBox(
+            "Fetch missing/low-res album covers from MusicBrainz Cover Art Archive"
+        )
+        self.caa_check.setToolTip(
+            "Before the build phase, walk every album folder; if its "
+            "cover.jpg is missing or smaller than the configured "
+            "max_cover_size_px, query MusicBrainz for the release and "
+            "fetch a fresh JPEG from the Cover Art Archive. Cached on disk "
+            "in <source>/.cover_art_cache/. The build pipeline embeds the "
+            "new cover into every track."
+        )
+        outer.addWidget(self.caa_check)
 
         # Row: action buttons
         btn_row = QHBoxLayout()
@@ -188,6 +200,14 @@ class BuildTab(QWidget):
             QMessageBox.warning(self, "No source files",
                                 "No audio found under the source folder.")
             return None
+
+        if self.caa_check.isChecked():
+            # Side-effect: writes <album>/cover.jpg files under `source`.
+            # _enrich_covers re-runs scan.discover so item.cover paths
+            # point at the freshly-written files.
+            from build_library import _enrich_covers
+            cfg.enrich_covers_via_caa = True
+            items = _enrich_covers(items, source, cfg, only)
 
         item_tags = []
         for item in items:
@@ -310,27 +330,51 @@ class BuildTab(QWidget):
 
     def _start_enrichment(self, state: dict) -> None:
         """Phase 2 — MusicBrainz enrichment. Walks every track whose
-        SourceTags lacks a genre, queries MB with the REAL artist+title
-        (compilation rewrite hasn't happened yet), mutates the
-        SourceTags in place. Then runs phase 3 + the build."""
+        SourceTags is NOT already MB-shaped (album+date+genre+album_artist
+        all present), queries MB with the REAL artist+title (compilation
+        rewrite hasn't happened yet), mutates the SourceTags in place.
+        Then runs phase 3 + the build.
+
+        Downloader-produced tracks are MB-shaped already, so a Build over
+        a download-only library is a no-op for this phase even with the
+        checkbox on."""
         # to_enrich indexes into state["item_tags"]
         to_enrich: list[tuple[int, dict]] = []
+        skipped = 0
         for idx, (_, t) in enumerate(state["item_tags"]):
-            if not t.genre:
-                to_enrich.append((idx, dict(t.__dict__)))
+            if is_mb_shaped(t.__dict__):
+                skipped += 1
+                continue
+            to_enrich.append((idx, dict(t.__dict__)))
 
         if not to_enrich:
             # Nothing to look up — skip straight to comp + build.
             jobs = self._apply_comp_and_build_jobs(state)
             if not jobs:
-                QMessageBox.information(self, "Nothing to do",
-                                        "Manifest reports everything up-to-date.")
+                msg = "Manifest reports everything up-to-date."
+                if skipped:
+                    msg = (f"All {skipped} tracks already MB-tagged; "
+                           "nothing to build.")
+                QMessageBox.information(self, "Nothing to do", msg)
                 return
+            if skipped:
+                QMessageBox.information(
+                    self, "MusicBrainz",
+                    f"All {skipped} tracks already MB-tagged; "
+                    "skipping enrichment.",
+                )
             self._start_build(jobs, state["output"])
             return
 
         self.table.setRowCount(0)
         self._row_for_target.clear()
+        if skipped:
+            self._add_or_update_row(
+                target="enrich-summary",
+                file_label=f"({skipped} already MB-tagged)",
+                status="skipped",
+                note="album+date+genre+album_artist present",
+            )
         self.progress.setRange(0, len(to_enrich))
         self.progress.setValue(0)
         self._set_running(True)

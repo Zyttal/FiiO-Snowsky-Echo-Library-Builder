@@ -73,6 +73,47 @@ def _process_one(job_payload: dict) -> dict:
                 "strategy": strategy_name, "error": str(e)}
 
 
+def _enrich_covers(items, source_dir, cfg, only):
+    """For each unique album in `items`, ensure a high-enough-res cover.jpg
+    exists by fetching from the Cover Art Archive when needed. Re-runs
+    scan.discover so the WorkItem.cover paths point at the new files.
+
+    Reads the source artist + album from one representative track per
+    album (the first WorkItem in the group) — cheap, and matches what
+    the rest of the pipeline assumes about album-folder semantics."""
+    from src import cover_art
+
+    by_album: dict[Path, "scan.WorkItem"] = {}
+    for item in items:
+        by_album.setdefault(item.source.parent, item)
+
+    cache_dir = source_dir / ".cover_art_cache"
+    click.echo(f"CAA cover enrichment: {len(by_album)} album(s) to check.")
+    fetched = 0
+    for album_dir, sample in by_album.items():
+        try:
+            src_tags = tags.read_source(
+                sample.source, sample.album_folder_name, sample.disc_no,
+            )
+        except Exception:  # noqa: BLE001
+            continue
+        if src_tags.artist == "Unknown Artist" or src_tags.album == "Unknown Album":
+            continue
+        release_id, wrote = cover_art.enrich_album_cover(
+            album_dir,
+            artist=src_tags.album_artist or src_tags.artist,
+            album=src_tags.album,
+            year=(src_tags.date or "")[:4] or None,
+            cache_dir=cache_dir,
+            min_size_px=cfg.max_cover_size_px,
+        )
+        if wrote:
+            fetched += 1
+            click.echo(f"  cover: {album_dir.name}  ({release_id})")
+    click.echo(f"CAA cover enrichment: {fetched} written.")
+    return scan.discover(source_dir, only=only)
+
+
 def _selected_strategies(primary: str, mirror: str) -> list[Strategy]:
     out: list[Strategy] = [STRATEGIES[primary]]
     if mirror and mirror != "none" and mirror != primary:
@@ -116,8 +157,12 @@ def cli():
               default=None, help="Path to config.yaml (defaults to ./config.yaml).")
 @click.option("--workers", type=int, default=None,
               help="Parallel workers (default: CPU count - 1).")
+@click.option("--enrich-covers-via-caa/--no-enrich-covers-via-caa", default=None,
+              help="Fetch missing/low-res album covers from the MusicBrainz "
+                   "Cover Art Archive before the build. Overrides "
+                   "enrich_covers_via_caa in config.yaml.")
 def build(source_dir, output_dir, primary_format, mirror, only, compilation_match,
-          force, prune, dry_run, config_path, workers):
+          force, prune, dry_run, config_path, workers, enrich_covers_via_caa):
     """Convert and reorganize a music library for the Echo."""
     if not dry_run:
         check_ffmpeg()
@@ -126,6 +171,8 @@ def build(source_dir, output_dir, primary_format, mirror, only, compilation_matc
     cfg = config_mod.load(cfg_path)
     if workers:
         cfg.workers = workers
+    if enrich_covers_via_caa is not None:
+        cfg.enrich_covers_via_caa = enrich_covers_via_caa
 
     output_dir = output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -135,6 +182,9 @@ def build(source_dir, output_dir, primary_format, mirror, only, compilation_matc
     if not items:
         click.echo("No audio files found.", err=True)
         sys.exit(1)
+
+    if cfg.enrich_covers_via_caa and not dry_run:
+        items = _enrich_covers(items, source_dir.resolve(), cfg, only)
 
     strategies = _selected_strategies(primary_format, mirror)
     click.echo(f"Source: {source_dir}  ({len(items)} files)")
@@ -414,6 +464,108 @@ def verify(output_dir):
             click.echo(f"  {i}")
         if len(issues) > 30:
             click.echo(f"  ... and {len(issues) - 30} more")
+
+
+@cli.command()
+@click.option("--output", "output_dir", type=click.Path(exists=True, file_okay=False,
+              path_type=Path), required=True,
+              help="Library root to fetch lyrics for.")
+@click.option("--only", default=None,
+              help="Process only album folders whose name contains this substring.")
+@click.option("--overwrite", is_flag=True,
+              help="Re-fetch even for tracks that already have a .lrc sidecar.")
+def lyrics(output_dir, only, overwrite):
+    """Fetch synced lyrics from LRCLIB for every track in the library and
+    drop them as <track>.lrc sidecars next to the audio. Skips tracks
+    that already have a sidecar unless --overwrite is set."""
+    from src import lyrics as lyrics_mod
+    import mutagen
+
+    output_dir = output_dir.resolve()
+    manifest = Manifest(output_dir / MANIFEST_NAME)
+    entries = manifest.all_entries()
+    if not entries:
+        click.echo("No manifest entries — run `build` or `reconcile` first.")
+        return
+
+    targets: list[Path] = []
+    for e in entries:
+        target = Path(e.target)
+        if not target.exists():
+            continue
+        if only and only.lower() not in target.parent.name.lower():
+            continue
+        targets.append(target)
+
+    if not targets:
+        click.echo("No tracks matched.")
+        return
+
+    fetched = skipped = misses = errors = 0
+    for target in tqdm(targets, unit="track"):
+        lrc_path = target.with_suffix(".lrc")
+        if lrc_path.exists() and not overwrite:
+            skipped += 1
+            continue
+        try:
+            f = mutagen.File(target)
+            artist = _first_tag(f, "ARTIST", "artist", "TPE1", "\xa9ART")
+            title = _first_tag(f, "TITLE", "title", "TIT2", "\xa9nam")
+            album = _first_tag(f, "ALBUM", "album", "TALB", "\xa9alb")
+            duration = int(f.info.length) if f and f.info else None
+        except Exception:  # noqa: BLE001
+            errors += 1
+            continue
+        if not artist or not title:
+            errors += 1
+            continue
+        # Compilation-mode tracks carry `Artist - Title` in TITLE and
+        # `Various Artists` as ARTIST. Unmix so LRCLIB sees the real
+        # artist; the original tag stays untouched.
+        if artist.lower() == "various artists" and " - " in title:
+            real_artist, _, real_title = title.partition(" - ")
+            artist = real_artist.strip()
+            title = real_title.strip()
+        try:
+            lrc = lyrics_mod.fetch_lrc(
+                artist=artist, title=title, album=album,
+                duration_s=duration,
+            )
+        except Exception:  # noqa: BLE001
+            errors += 1
+            continue
+        if not lrc:
+            misses += 1
+            continue
+        lrc_path.write_text(lrc, encoding="utf-8")
+        fetched += 1
+
+    click.echo(
+        f"Done: {fetched} fetched, {skipped} already-present, "
+        f"{misses} no-match, {errors} errors."
+    )
+
+
+def _first_tag(audio, *keys) -> str | None:
+    """Best-effort first-value tag read across Vorbis/ID3/MP4 schemes."""
+    if audio is None or audio.tags is None:
+        return None
+    for k in keys:
+        try:
+            v = audio.tags.get(k)
+        except Exception:  # noqa: BLE001
+            continue
+        if v is None:
+            continue
+        if hasattr(v, "text") and v.text:
+            return str(v.text[0]).strip() or None
+        if isinstance(v, (list, tuple)) and v:
+            x = v[0]
+            if isinstance(x, (list, tuple)) and x:
+                x = x[0]
+            return str(x).strip() or None
+        return str(v).strip() or None
+    return None
 
 
 @cli.command()

@@ -27,6 +27,22 @@ class Config:
     workers: int | None = None
     default_genre: str | None = None
     enrich_tags_via_musicbrainz: bool = False
+    # YouTube downloader output format. "passthrough" (default) keeps the
+    # source codec yt-dlp grabbed (typically AAC m4a or Opus) — no re-encode,
+    # smallest file, full FiiO Echo compatibility. "m4a" re-encodes everything
+    # to AAC m4a for codec uniformity. "flac" wraps the lossy source in a
+    # FLAC container (v0.1.0 behavior, kept for users who want uniform .flac).
+    download_audio_format: str = "passthrough"
+    # Fetch missing or low-resolution album covers from the MusicBrainz
+    # Cover Art Archive during build. Off by default to keep the build
+    # entirely local; turn on for compilations or rips whose folder-level
+    # cover.jpg is missing/tiny.
+    enrich_covers_via_caa: bool = False
+    # Drop a `<track>.lrc` lyrics sidecar next to each downloaded track,
+    # fetched from LRCLIB (free, no API key). The DAP reads the sidecar
+    # at playback. On by default — turn off to skip the extra HTTP call
+    # if you don't want lyrics on disk.
+    fetch_lyrics: bool = True
 
     def resolved_workers(self) -> int:
         if self.workers is not None:
