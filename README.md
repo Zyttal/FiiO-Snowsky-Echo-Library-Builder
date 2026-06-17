@@ -126,6 +126,37 @@ track title and sequential numbering per disc:
 Without the flag, the tool disperses tracks to their tagged ARTIST folders
 (useful if you want artist-based browsing on the Echo).
 
+### Download (YouTube → MusicBrainz → source tree)
+
+Hand the tool a text file of songs and it will fetch each from YouTube,
+look up canonical metadata on MusicBrainz, re-encode as FLAC with clean
+Vorbis tags and embedded cover art, and land it in your source library so
+the next `build` picks it up.
+
+```bash
+./build_library.py download --list songs.txt --dest /mnt/games/Music/
+```
+
+Input format — one song per line. The 3-field form pins the album, which
+materially improves MusicBrainz matches for popular tracks (which often
+appear on dozens of compilations):
+
+```
+# echo-library-builder/songs.txt
+Pink Floyd - The Dark Side of the Moon - Time
+The Beatles - Help! - Yesterday
+TOOL - Ænima - Stinkfist
+Radiohead - Karma Police
+```
+
+The downloader uses the existing `default_genre` config as a fallback
+when MusicBrainz has no genre tag for the recording, so the Echo never
+sees "Unknown" for downloaded tracks.
+
+**Copyright note**: downloading commercial audio from YouTube is against
+their ToS and the legality varies by jurisdiction. This tool exists for
+personal-library use on the user's own device; how you use it is on you.
+
 ### Favorites
 
 The Echo's on-device "Add to Favorites" list lives in internal flash and isn't
@@ -247,9 +278,13 @@ echo-library-builder/
 │   ├── layout.py           # compute Artist/Album/NN - Title.flac
 │   ├── sanitize.py         # filename-safe transforms
 │   ├── favorites.py        # M3U write + best-effort device probe
+│   ├── song_list.py        # parse the downloader's input file
+│   ├── musicbrainz.py      # canonical tag enrichment
+│   ├── downloader.py       # yt-dlp + MB + tag write, all in one
 │   └── manifest.py         # JSON manifest for incremental re-runs
 ├── gui/                    # PySide6 desktop GUI (python -m gui)
 │   ├── main.py             # QApplication + tabbed main window
+│   ├── download_tab.py     # song-list picker + per-song status
 │   ├── build_tab.py        # source/output pickers + per-file progress
 │   ├── library_tab.py      # tree view + favorite toggle column
 │   ├── device_tab.py       # SD card picker + push/pull favorites

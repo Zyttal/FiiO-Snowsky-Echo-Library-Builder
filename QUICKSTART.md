@@ -132,8 +132,42 @@ It only processes the new files — the existing 390 are recognized as up-to-dat
 | Use MP3 instead of FLAC as the primary | add `--format mp3` |
 | Write a Favorites.m3u to the SD card | `pyenv exec python build_library.py favorites push --output ... --sd-root /media/$USER/ECHO/` |
 | List what the Echo has favorited on the card | `pyenv exec python build_library.py favorites pull --sd-root /media/$USER/ECHO/` |
+| Download a song list from YouTube | `pyenv exec python build_library.py download --list songs.txt --dest /mnt/games/Music/` |
 | Launch the desktop GUI instead | `pyenv exec python -m gui` |
 | Run the tests | `pyenv exec python -m pytest tests/ -v` |
+
+## Downloading songs by name (YouTube → MusicBrainz → source tree)
+
+If you want the tool to fetch new tracks for you rather than only re-package what you've already ripped, write a song list and feed it to the `download` command. Each line is one song. The 3-field form pins the album, which makes MusicBrainz lookups much more accurate:
+
+```
+# /mnt/games/Music/wishlist.txt
+Pink Floyd - The Dark Side of the Moon - Time
+TOOL - Ænima - Stinkfist
+Radiohead - Karma Police
+```
+
+Then:
+
+```bash
+pyenv exec python build_library.py download \
+    --list /mnt/games/Music/wishlist.txt \
+    --dest /mnt/games/Music/
+```
+
+What happens for each line:
+
+1. **MusicBrainz lookup** finds the album, year, genre, track and disc number, album artist, and a cover-art URL.
+2. **YouTube search** picks the first result whose duration matches the MusicBrainz duration within ±20 % (rejects "live cover" mistakes).
+3. **yt-dlp + ffmpeg** download the audio and encode it to FLAC.
+4. **Tags + cover.jpg** land alongside the file via the same tag-writer the rest of the pipeline uses — clean Vorbis comments only, no ID3-in-FLAC.
+5. **Files appear** at `<dest>/<Album> - <Artist>/NN - Title.flac` matching your existing folder convention.
+
+After it finishes, re-run the `build` step from earlier and the new tracks flow straight into your Echo-Library tree.
+
+The GUI exposes the same flow under the **Download** tab.
+
+**Heads up**: downloading commercial audio from YouTube is against their ToS and the legality varies by jurisdiction. This is a personal-library tool — how you use it is on you.
 
 ## Launching the GUI
 
