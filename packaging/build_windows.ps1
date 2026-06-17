@@ -18,8 +18,15 @@ Write-Host ">>> Cleaning previous build"
 if (Test-Path $Dist) { Remove-Item -Recurse -Force $Dist }
 if (Test-Path $Build) { Remove-Item -Recurse -Force $Build }
 
+# Use pyenv-win locally, plain python in CI.
+if (Get-Command pyenv -ErrorAction SilentlyContinue) {
+    $Py = "pyenv exec python"
+} else {
+    $Py = "python"
+}
+
 Write-Host ">>> Ensuring pyinstaller is installed"
-pyenv exec python -m pip install --quiet pyinstaller
+Invoke-Expression "$Py -m pip install --quiet pyinstaller"
 
 Write-Host ">>> Fetching static ffmpeg"
 New-Item -ItemType Directory -Force -Path $FfmpegDir | Out-Null
@@ -38,7 +45,7 @@ if (-not (Test-Path $FfmpegExe)) {
 }
 
 Write-Host ">>> Running PyInstaller"
-pyenv exec pyinstaller --clean --noconfirm packaging\pyinstaller.spec
+Invoke-Expression "$Py -m PyInstaller --clean --noconfirm packaging\pyinstaller.spec"
 
 $ExeOut = Join-Path $Dist "echo-library-builder.exe"
 if (-not (Test-Path $ExeOut)) {

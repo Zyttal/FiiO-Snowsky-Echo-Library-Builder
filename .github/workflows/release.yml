@@ -1,0 +1,110 @@
+name: Release
+
+# Cuts a GitHub Release whenever a v*.* tag is pushed. Each OS runner
+# builds its native installer artifact (AppImage / .dmg / .exe) using the
+# scripts in packaging/, then uploads the artifact to the release.
+#
+# To cut a release:
+#   git tag v0.1.0
+#   git push origin v0.1.0
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write   # required by softprops/action-gh-release to attach assets
+
+jobs:
+  build:
+    name: Build (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact: dist/echo-library-builder-x86_64.AppImage
+            script: packaging/build_linux.sh
+          - os: macos-latest
+            artifact: dist/echo-library-builder.dmg
+            script: packaging/build_macos.sh
+          - os: windows-latest
+            artifact: dist/echo-library-builder.exe
+            script: packaging/build_windows.ps1
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python deps
+        shell: bash
+        run: python -m pip install --upgrade pip && python -m pip install -r requirements.txt
+
+      # Linux needs appimagetool; ships nowhere by default.
+      - name: Install appimagetool (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          curl -L -o /usr/local/bin/appimagetool \
+            https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x /usr/local/bin/appimagetool
+          # AppImage needs FUSE or --appimage-extract-and-run on modern Ubuntu.
+          echo "APPIMAGE_EXTRACT_AND_RUN=1" >> $GITHUB_ENV
+
+      - name: Build (Linux/macOS)
+        if: matrix.os != 'windows-latest'
+        run: bash ${{ matrix.script }}
+
+      - name: Build (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: ./${{ matrix.script }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.os }}
+          path: ${{ matrix.artifact }}
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Flatten artifacts
+        run: |
+          mkdir -p release-assets
+          find artifacts -type f \
+            \( -name '*.AppImage' -o -name '*.dmg' -o -name '*.exe' \) \
+            -exec mv {} release-assets/ \;
+          ls -la release-assets
+
+      - name: Read CHANGELOG entry
+        id: changelog
+        run: |
+          tag="${GITHUB_REF##*/}"
+          # Pull the section for this tag from CHANGELOG.md if present.
+          if [ -f CHANGELOG.md ]; then
+            awk "/^## ${tag}\$/,/^## /{print}" CHANGELOG.md \
+              | sed -e '1d' -e '$d' > release-body.txt
+          fi
+          if [ ! -s release-body.txt ]; then
+            echo "Release ${tag} of echo-library-builder." > release-body.txt
+          fi
+
+      - name: Create release and upload assets
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: release-body.txt
+          files: release-assets/*
+          draft: false
+          prerelease: false

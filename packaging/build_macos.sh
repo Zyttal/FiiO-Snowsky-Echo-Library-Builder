@@ -18,11 +18,17 @@ FFMPEG_DIR="$PKG/ffmpeg/macos"
 DIST="$ROOT/dist"
 BUILD="$ROOT/build"
 
+if command -v pyenv >/dev/null; then
+    PY="pyenv exec python"
+else
+    PY="python3"
+fi
+
 echo ">>> Cleaning previous build"
 rm -rf "$DIST" "$BUILD"
 
 echo ">>> Ensuring pyinstaller is installed"
-pyenv exec python -m pip install --quiet pyinstaller
+$PY -m pip install --quiet pyinstaller
 
 echo ">>> Fetching static ffmpeg"
 mkdir -p "$FFMPEG_DIR"
@@ -36,7 +42,7 @@ if [[ ! -x "$FFMPEG_DIR/ffmpeg" ]]; then
 fi
 
 echo ">>> Running PyInstaller"
-pyenv exec pyinstaller --clean --noconfirm packaging/pyinstaller.spec
+$PY -m PyInstaller --clean --noconfirm packaging/pyinstaller.spec
 
 APP="$DIST/echo-library-builder.app"
 if [[ ! -d "$APP" ]]; then

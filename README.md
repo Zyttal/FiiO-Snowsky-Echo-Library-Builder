@@ -194,6 +194,21 @@ packaging/build_macos.sh        # .dmg in dist/
 Each bundles a static ffmpeg so end-users don't need to install anything.
 The macOS `.app` is unsigned; first-time users must right-click → Open.
 
+### Cutting a release
+
+The release workflow at `.github/workflows/release.yml` builds the three
+installers on native runners and attaches them to a GitHub Release when
+a `v*.*.*` tag is pushed.
+
+```bash
+# Update CHANGELOG.md with the v0.2.0 section first
+git tag v0.2.0
+git push origin v0.2.0
+```
+
+The release body is auto-filled from the matching section in
+`CHANGELOG.md`; if no entry exists for the tag, a placeholder is used.
+
 ### Tests
 
 ```bash

@@ -15,11 +15,18 @@ FFMPEG_DIR="$PKG/ffmpeg/linux"
 DIST="$ROOT/dist"
 BUILD="$ROOT/build"
 
+# Use pyenv locally, plain `python` in CI / non-pyenv environments.
+if command -v pyenv >/dev/null; then
+    PY="pyenv exec python"
+else
+    PY="python"
+fi
+
 echo ">>> Cleaning previous build"
 rm -rf "$DIST" "$BUILD"
 
 echo ">>> Ensuring pyinstaller is installed"
-pyenv exec python -m pip install --quiet pyinstaller
+$PY -m pip install --quiet pyinstaller
 
 echo ">>> Fetching static ffmpeg"
 mkdir -p "$FFMPEG_DIR"
@@ -34,7 +41,7 @@ if [[ ! -x "$FFMPEG_DIR/ffmpeg" ]]; then
 fi
 
 echo ">>> Running PyInstaller"
-pyenv exec pyinstaller --clean --noconfirm packaging/pyinstaller.spec
+$PY -m PyInstaller --clean --noconfirm packaging/pyinstaller.spec
 
 EXE="$DIST/echo-library-builder"
 if [[ ! -x "$EXE" ]]; then
