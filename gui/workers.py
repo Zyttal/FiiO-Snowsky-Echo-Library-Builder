@@ -54,7 +54,7 @@ class BuildRunner(QRunnable):
     the source/target pair in a Manifest owned by this runner, and save
     the manifest at the end. Without this the Device + Playlists tabs
     have nothing to read from after a GUI build and complain "no
-    manifest, run a build first.""""""
+    manifest, run a build first."."""
 
     def __init__(self, jobs: list[JobSpec], workers: int,
                  output_dir: Path) -> None:
@@ -277,7 +277,11 @@ class LibraryScanRunner(QRunnable):
     def run(self) -> None:
         try:
             from mutagen.flac import FLAC
-            paths = sorted(self.root.rglob("*.flac"))
+            # Sort numerically by the "NN - " prefix so a 333-track
+            # compilation reads 10 → 11 → 12 instead of jumping to
+            # 100 → 101 (lexicographic order). Fall back to the full
+            # path string for files that don't follow the convention.
+            paths = sorted(self.root.rglob("*.flac"), key=_track_sort_key)
             self.signals.started.emit(len(paths))
             count = 0
             for p in paths:
@@ -408,3 +412,22 @@ class DownloadRunner(QRunnable):
             else:
                 err += 1
         self.signals.finished.emit(ok, err)
+
+
+# Used by LibraryScanRunner.run()'s sorted(rglob...) call to keep
+# track-numbered files in numeric order (10 < 11 < 100), per album.
+import re as _re_for_sort_key
+_TRACK_PREFIX_RE = _re_for_sort_key.compile(r"^\s*(\d+)\s*[-_.]")
+
+
+def _track_sort_key(p: Path) -> tuple:
+    """(parent path, track number or +inf, lowercased filename).
+
+    Files inside the same album folder sort by their leading track
+    number — '01 - Foo', '02 - Bar', ..., '99 - Baz', '100 - Quux'.
+    The album folder itself still sorts by its parent path so albums
+    stay grouped. Files without a numeric prefix fall to the back of
+    their album."""
+    m = _TRACK_PREFIX_RE.match(p.stem)
+    track = int(m.group(1)) if m else float("inf")
+    return (str(p.parent).lower(), track, p.name.lower())

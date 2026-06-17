@@ -10,6 +10,7 @@ from pathlib import Path
 from PySide6.QtCore import Qt, QThreadPool, Signal
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QFileDialog,
     QHBoxLayout,
     QHeaderView,
@@ -114,6 +115,11 @@ class LibraryTab(QWidget):
         self.tree.itemChanged.connect(self._on_item_changed)
         self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.tree.customContextMenuRequested.connect(self._on_context_menu)
+        # Ctrl-click for individual additions, Shift-click for a range —
+        # so the user can grab everything from "AC/DC" to "ZZ Top" or
+        # one whole artist row and drop the lot into a playlist.
+        self.tree.setSelectionMode(
+            QAbstractItemView.SelectionMode.ExtendedSelection)
         outer.addWidget(self.tree)
 
         self.status = QLabel("(no library loaded)")
@@ -309,67 +315,140 @@ class LibraryTab(QWidget):
             self.favorites_changed.emit()
 
     def _on_context_menu(self, pos) -> None:
-        item = self.tree.itemAt(pos)
-        if item is None:
+        clicked = self.tree.itemAt(pos)
+        if clicked is None:
             return
+
+        # If the user right-clicked on a row that's part of a larger
+        # selection, act on the whole selection. Otherwise act on the
+        # one clicked row.
+        selected = self.tree.selectedItems()
+        if clicked not in selected:
+            selected = [clicked]
+
+        # Walk every selected item down to its track-row descendants;
+        # dedupe paths in case the user selected both an artist row and
+        # one of their album rows.
+        track_paths = self._collect_track_paths(selected)
+        folder_items = self._collect_folder_items(selected)
+
         menu = QMenu(self)
 
-        target = item.data(0, Qt.ItemDataRole.UserRole)
-        if target:
-            # Track row — playlist actions + delete track
-            target_path = Path(target)
-            self._append_playlist_actions(menu, target_path)
+        if track_paths:
+            self._append_playlist_actions(
+                menu, track_paths,
+                label_suffix=(f" ({len(track_paths)} tracks)"
+                              if len(track_paths) > 1 else ""),
+            )
             menu.addSeparator()
-            del_action = QAction("Delete track", self)
-            del_action.triggered.connect(
-                lambda: self._delete_tracks([target_path]))
-            menu.addAction(del_action)
-        else:
-            # Artist or album row — delete folder
-            folder = item.data(0, Qt.ItemDataRole.UserRole + 1)
-            if folder:
-                level = "album" if item.parent() else "artist"
-                count = self._count_descendant_tracks(item)
-                del_action = QAction(
-                    f"Delete {level} ({count} track{'s' if count != 1 else ''})",
+            verb = ("Delete tracks" if len(track_paths) > 1
+                    else "Delete track")
+            del_tracks = QAction(
+                f"{verb} ({len(track_paths)})", self)
+            del_tracks.triggered.connect(
+                lambda: self._delete_tracks(track_paths))
+            menu.addAction(del_tracks)
+
+        if folder_items:
+            menu.addSeparator()
+            # Per-folder delete (each picks its own confirmation), since
+            # different folders may be different sizes.
+            for it, folder in folder_items:
+                level = "album" if it.parent() else "artist"
+                count = self._count_descendant_tracks(it)
+                del_folder = QAction(
+                    f"Delete {level} '{it.text(self.COL_NAME)}' "
+                    f"({count} track{'s' if count != 1 else ''})",
                     self,
                 )
-                del_action.triggered.connect(
-                    lambda: self._delete_folder(Path(folder), item))
-                menu.addAction(del_action)
+                del_folder.triggered.connect(
+                    lambda _, p=folder, i=it: self._delete_folder(Path(p), i))
+                menu.addAction(del_folder)
 
         if menu.actions():
             menu.exec(self.tree.viewport().mapToGlobal(pos))
 
-    def _append_playlist_actions(self, menu, target_path: Path) -> None:
+    def _collect_track_paths(self, items: list[QTreeWidgetItem]) -> list[Path]:
+        """Walk every selected item down to its track descendants and
+        return a deduplicated list of track paths in tree order."""
+        seen: set[str] = set()
+        out: list[Path] = []
+
+        def walk(it: QTreeWidgetItem) -> None:
+            data = it.data(0, Qt.ItemDataRole.UserRole)
+            if data:
+                if data not in seen:
+                    seen.add(data)
+                    out.append(Path(data))
+                return
+            # Not a track row — recurse into children.
+            for j in range(it.childCount()):
+                walk(it.child(j))
+
+        for it in items:
+            walk(it)
+        return out
+
+    def _collect_folder_items(
+        self, items: list[QTreeWidgetItem],
+    ) -> list[tuple[QTreeWidgetItem, str]]:
+        """Pick the artist/album rows from the selection so the context
+        menu can offer per-folder delete actions."""
+        out: list[tuple[QTreeWidgetItem, str]] = []
+        for it in items:
+            if it.data(0, Qt.ItemDataRole.UserRole):
+                continue  # track row, not a folder
+            folder = it.data(0, Qt.ItemDataRole.UserRole + 1)
+            if folder:
+                out.append((it, folder))
+        return out
+
+    def _append_playlist_actions(self, menu, target_paths: list[Path],
+                                 label_suffix: str = "") -> None:
         if not self._manifest:
             return
         existing_playlists = self._manifest.playlist_names()
-        current = set(self._playlists_for(target_path))
+        # For a multi-track selection a playlist is "current" only when
+        # every selected track is already in it. Anything narrower would
+        # produce ambiguous Add/Remove labels.
+        per_track_membership = [set(self._playlists_for(p)) for p in target_paths]
+        if per_track_membership:
+            in_all = set.intersection(*per_track_membership)
+            in_any = set.union(*per_track_membership)
+        else:
+            in_all = set()
+            in_any = set()
 
         if existing_playlists:
-            add_menu = menu.addMenu("Add to playlist")
-            available = [n for n in existing_playlists if n not in current]
+            add_menu = menu.addMenu(f"Add to playlist{label_suffix}")
+            available = [n for n in existing_playlists if n not in in_all]
             for name in available:
                 action = QAction(name, self)
                 action.triggered.connect(
-                    lambda _, n=name: self._toggle_playlist(target_path, n, True))
+                    lambda _, n=name: self._toggle_playlist_bulk(
+                        target_paths, n, True))
                 add_menu.addAction(action)
             if not available:
                 stub = QAction("(already in all)", self)
                 stub.setEnabled(False)
                 add_menu.addAction(stub)
 
-            if current:
-                remove_menu = menu.addMenu("Remove from playlist")
-                for name in sorted(current):
+            if in_any:
+                remove_menu = menu.addMenu(f"Remove from playlist{label_suffix}")
+                for name in sorted(in_any):
                     action = QAction(name, self)
                     action.triggered.connect(
-                        lambda _, n=name: self._toggle_playlist(target_path, n, False))
+                        lambda _, n=name: self._toggle_playlist_bulk(
+                            target_paths, n, False))
                     remove_menu.addAction(action)
 
-        new_action = QAction("New playlist with this track…", self)
-        new_action.triggered.connect(lambda: self._new_playlist_with(target_path))
+        new_action = QAction(
+            ("New playlist with these tracks…" if len(target_paths) > 1
+             else "New playlist with this track…"),
+            self,
+        )
+        new_action.triggered.connect(
+            lambda: self._new_playlist_with_bulk(target_paths))
         menu.addAction(new_action)
 
     @staticmethod
@@ -553,28 +632,52 @@ class LibraryTab(QWidget):
         self.status.setText(f"Deleted {folder.name} ({count} tracks).")
 
     def _toggle_playlist(self, target: Path, name: str, add: bool) -> None:
-        if not self._manifest:
+        self._toggle_playlist_bulk([target], name, add)
+
+    def _toggle_playlist_bulk(
+        self, targets: list[Path], name: str, add: bool,
+    ) -> None:
+        """Add or remove `targets` from playlist `name` in one manifest
+        save. Updates the Playlists column on every affected row instead
+        of reloading the whole tree (which would be slow for big libraries)."""
+        if not self._manifest or not targets:
             return
-        if add:
-            self._manifest.add_to_playlist(target, name)
-        else:
-            self._manifest.remove_from_playlist(target, name)
+        for target in targets:
+            if add:
+                self._manifest.add_to_playlist(target, name)
+            else:
+                self._manifest.remove_from_playlist(target, name)
         self._manifest.save()
-        # Update just this row's Playlists column rather than reloading the
-        # whole tree.
+
+        # Index target strings → row item once, then update the affected
+        # rows. Avoids self._iter_track_items() per-target.
+        wanted = {str(p) for p in targets}
         for item in self._iter_track_items():
-            if item.data(0, Qt.ItemDataRole.UserRole) == str(target):
+            data = item.data(0, Qt.ItemDataRole.UserRole)
+            if data in wanted:
                 item.setText(self.COL_PLAYLISTS,
-                             ", ".join(self._playlists_for(target)))
-                break
+                             ", ".join(self._playlists_for(Path(data))))
         self.playlists_changed.emit()
+        self.status.setText(
+            f"{'Added' if add else 'Removed'} {len(targets)} track"
+            f"{'s' if len(targets) != 1 else ''} "
+            f"{'to' if add else 'from'} '{name}'."
+        )
 
     def _new_playlist_with(self, target: Path) -> None:
+        self._new_playlist_with_bulk([target])
+
+    def _new_playlist_with_bulk(self, targets: list[Path]) -> None:
+        if not targets:
+            return
         name, ok = QInputDialog.getText(
-            self, "New playlist", "Playlist name:")
+            self, "New playlist",
+            f"Playlist name (will hold {len(targets)} track"
+            f"{'s' if len(targets) != 1 else ''}):",
+        )
         if not ok or not name.strip():
             return
-        self._toggle_playlist(target, name.strip(), True)
+        self._toggle_playlist_bulk(targets, name.strip(), True)
 
     def _iter_track_items(self):
         """Yield every leaf (track) item in the tree."""
