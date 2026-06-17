@@ -432,7 +432,11 @@ class BuildTab(QWidget):
         self._set_running(True)
         self._output_dir = output_dir
 
-        self._runner = BuildRunner(jobs, workers=self.workers_spin.value())
+        self._runner = BuildRunner(
+            jobs,
+            workers=self.workers_spin.value(),
+            output_dir=output_dir,
+        )
         self._runner.signals.file_done.connect(self._on_file_done)
         self._runner.signals.finished.connect(self._on_finished)
         self._runner.signals.cancelled.connect(self._on_cancelled)

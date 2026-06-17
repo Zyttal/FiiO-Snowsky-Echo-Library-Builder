@@ -48,12 +48,20 @@ class BuildSignals(QObject):
 
 
 class BuildRunner(QRunnable):
-    """Run a list of JobSpecs through a ProcessPoolExecutor on a Qt thread."""
+    """Run a list of JobSpecs through a ProcessPoolExecutor on a Qt thread.
 
-    def __init__(self, jobs: list[JobSpec], workers: int) -> None:
+    Mirrors the CLI's `_run_jobs`: after each successful job we record
+    the source/target pair in a Manifest owned by this runner, and save
+    the manifest at the end. Without this the Device + Playlists tabs
+    have nothing to read from after a GUI build and complain "no
+    manifest, run a build first.""""""
+
+    def __init__(self, jobs: list[JobSpec], workers: int,
+                 output_dir: Path) -> None:
         super().__init__()
         self.jobs = jobs
         self.workers = max(1, workers)
+        self.output_dir = output_dir
         self.signals = BuildSignals()
         self._cancel = False
 
@@ -62,12 +70,15 @@ class BuildRunner(QRunnable):
 
     def run(self) -> None:
         from build_library import _process_one  # local import: heavy modules
+        from src.manifest import MANIFEST_NAME, Manifest
 
+        manifest = Manifest(self.output_dir / MANIFEST_NAME)
         payloads = [j.as_payload() for j in self.jobs]
         self.signals.started.emit(len(payloads))
 
         ok = err = 0
         if not payloads:
+            manifest.save()
             self.signals.finished.emit(ok, err)
             return
 
@@ -77,14 +88,23 @@ class BuildRunner(QRunnable):
                 if self._cancel:
                     for f in futures:
                         f.cancel()
+                    # Save whatever we managed to record so far so a
+                    # cancelled build still leaves a usable manifest.
+                    manifest.save()
                     self.signals.cancelled.emit()
                     return
                 result = fut.result()
                 self.signals.file_done.emit(result)
                 if result.get("ok"):
                     ok += 1
+                    manifest.record(
+                        Path(result["source"]),
+                        result["strategy"],
+                        Path(result["target"]),
+                    )
                 else:
                     err += 1
+        manifest.save()
         self.signals.finished.emit(ok, err)
 
 

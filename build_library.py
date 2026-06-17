@@ -267,6 +267,84 @@ def _prune_orphans(manifest: Manifest) -> int:
 
 
 @cli.command()
+@click.option("--source", "source_dir", type=click.Path(exists=True, file_okay=False,
+              path_type=Path), required=True,
+              help="Source root that was used to produce the output tree.")
+@click.option("--output", "output_dir", type=click.Path(exists=True, file_okay=False,
+              path_type=Path), required=True,
+              help="Output library root that was built but has no manifest "
+                   "(or a stale one).")
+@click.option("--format", "primary_format",
+              type=click.Choice(list(STRATEGIES.keys())), default="flac",
+              show_default=True, help="Primary output format used by the build.")
+@click.option("--as-compilation", "compilation_match", default=None,
+              help="If the build used --as-compilation, pass the same substring.")
+@click.option("--config", "config_path", type=click.Path(path_type=Path),
+              default=None, help="Path to config.yaml (defaults to ./config.yaml).")
+def reconcile(source_dir, output_dir, primary_format, compilation_match, config_path):
+    """Rebuild the manifest from an already-converted output tree.
+
+    Walks the source the same way `build` would, computes the target path
+    each file would have landed at, and for any target that physically
+    exists on disk, records a manifest entry. Useful when a previous run
+    (e.g. an earlier GUI build) converted files but didn't save the
+    manifest — without it the Device, Playlists, and incremental rebuild
+    paths all think nothing exists.
+    """
+    cfg_path = config_path or Path(__file__).parent / "config.yaml"
+    cfg = config_mod.load(cfg_path)
+    source_dir = source_dir.resolve()
+    output_dir = output_dir.resolve()
+    manifest = Manifest(output_dir / MANIFEST_NAME)
+    items = scan.discover(source_dir)
+
+    strategy = STRATEGIES[primary_format]
+    out_root = strategy.output_root(output_dir, is_primary=True)
+
+    # Same compilation-handling pass as build()
+    item_tags = []
+    comp_counters: dict[tuple[str, int | None], int] = {}
+    for item in items:
+        t = tags.read_source(item.source, item.album_folder_name, item.disc_no)
+        if t.genre is None and cfg.default_genre:
+            t.genre = cfg.default_genre
+        if compilation_match and compilation_match.lower() in item.album_folder_name.lower():
+            original_artist = t.artist
+            t.title = f"{original_artist} - {t.title}"
+            t.artist = "Various Artists"
+            t.album_artist = "Various Artists"
+            t.album = item.album_folder_name
+            t.disc_no = item.disc_no
+            key = (item.album_folder_name, t.disc_no)
+            comp_counters[key] = comp_counters.get(key, 0) + 1
+            t.track_no = comp_counters[key]
+        item_tags.append((item, t))
+
+    disc_index = layout.discs_per_album([(cfg, t) for _, t in item_tags])
+    multi_disc = {k for k, v in disc_index.items() if len(v) > 1}
+
+    recorded = 0
+    missing = 0
+    for item, src_tags in item_tags:
+        ext = (strategy.decide_ext(item.source)
+               if hasattr(strategy, "decide_ext") else strategy.ext)
+        artist_album = layout._artist_album(src_tags, cfg)
+        target = layout.target_path(
+            out_root, src_tags, cfg, ext,
+            multi_disc=artist_album in multi_disc,
+        )
+        if target.exists():
+            manifest.record(item.source, strategy.name, target)
+            recorded += 1
+        else:
+            missing += 1
+
+    manifest.save()
+    click.echo(f"Reconciled: {recorded} entries recorded, "
+               f"{missing} planned targets not present on disk.")
+
+
+@cli.command()
 @click.option("--output", "output_dir", type=click.Path(exists=True, file_okay=False,
               path_type=Path), required=True)
 def status(output_dir):
