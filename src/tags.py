@@ -128,7 +128,10 @@ def write_mp3(target: Path, tags: SourceTags, picture_bytes: bytes | None) -> No
     audio = MP3(target, ID3=ID3)
     if audio.tags is None:
         audio.add_tags()
-    audio.tags.delete()
+    # Clear in-memory frames (e.g. the ffmpeg-written TSSE). Don't call
+    # tags.delete() — in mutagen >=1.46 it requires a filename arg and the
+    # bare call raises 'Missing filename or fileobj argument'.
+    audio.tags.clear()
     audio.tags.add(TPE1(encoding=3, text=tags.artist))
     audio.tags.add(TALB(encoding=3, text=tags.album))
     audio.tags.add(TIT2(encoding=3, text=tags.title))
