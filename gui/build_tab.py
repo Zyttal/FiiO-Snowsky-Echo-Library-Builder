@@ -29,7 +29,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from gui.workers import BuildRunner, JobSpec
+from gui.workers import BuildRunner, JobSpec, TagEnrichmentRunner
 
 
 class BuildTab(QWidget):
@@ -95,6 +95,16 @@ class BuildTab(QWidget):
         outer.addLayout(_labeled_row("Treat as compilation:", self.compilation_edit))
         self.force_check = QCheckBox("Force rebuild (ignore manifest)")
         outer.addWidget(self.force_check)
+        self.enrich_check = QCheckBox(
+            "Look up missing tags via MusicBrainz (slow: ~1 s per missing track)"
+        )
+        self.enrich_check.setToolTip(
+            "Before the build phase, fill in missing GENRE / DATE / "
+            "ALBUMARTIST tags by querying MusicBrainz. Cached per session "
+            "to avoid repeat lookups. The Echo's 'Unknown' genre vanishes "
+            "when this is on."
+        )
+        outer.addWidget(self.enrich_check)
 
         # Row: action buttons
         btn_row = QHBoxLayout()
@@ -247,6 +257,84 @@ class BuildTab(QWidget):
                                     "Manifest reports everything up-to-date.")
             return
 
+        if self.enrich_check.isChecked():
+            self._start_enrichment(jobs, output_dir)
+        else:
+            self._start_build(jobs, output_dir)
+
+    def _start_enrichment(self, jobs: list, output_dir: Path) -> None:
+        """Phase 1 — MusicBrainz enrichment. Walks every job missing a
+        genre, looks it up, mutates jobs in place. Then proceeds to the
+        build phase."""
+        # Deduplicate by (source, strategy=primary) so a FLAC+MP3 pair
+        # for the same source only triggers one lookup; the cache inside
+        # the runner also dedupes by (artist, title, album) across
+        # jobs that happen to be the same recording.
+        to_enrich: list[tuple[int, dict]] = []
+        for idx, j in enumerate(jobs):
+            if j.src_tags_dict.get("genre"):
+                continue
+            to_enrich.append((idx, dict(j.src_tags_dict)))
+
+        if not to_enrich:
+            # Everything already has a genre — go straight to build.
+            self._start_build(jobs, output_dir)
+            return
+
+        self.table.setRowCount(0)
+        self._row_for_target.clear()
+        self.progress.setRange(0, len(to_enrich))
+        self.progress.setValue(0)
+        self._set_running(True)
+        self._jobs_to_build = jobs
+        self._output_dir = output_dir
+
+        self._enrich_runner = TagEnrichmentRunner(to_enrich)
+        self._enrich_runner.signals.progress.connect(self._on_enrich_progress)
+        self._enrich_runner.signals.enriched.connect(self._on_enrich_enriched)
+        self._enrich_runner.signals.finished.connect(self._on_enrich_finished)
+        self._enrich_runner.signals.cancelled.connect(self._on_enrich_cancelled)
+        self.pool.start(self._enrich_runner)
+
+    def _on_enrich_progress(self, i: int, label: str) -> None:
+        self.progress.setValue(i + 1)
+        # Reuse the table for live MB feedback so the user can see what's
+        # happening; we'll wipe and repopulate for the build phase.
+        self._add_or_update_row(
+            target=f"enrich-{i}",
+            file_label=label,
+            status="looking up",
+            note="",
+        )
+
+    def _on_enrich_enriched(self, idx: int, updated_tags: dict) -> None:
+        self._jobs_to_build[idx].src_tags_dict.update(updated_tags)
+        # Reflect the genre that just landed for the row that's currently
+        # showing this artist/title (best-effort, not strictly mapped).
+        artist = updated_tags.get("artist", "")
+        title = updated_tags.get("title", "")
+        for row in range(self.table.rowCount()):
+            item = self.table.item(row, 0)
+            if item and item.text() == f"{artist} - {title}":
+                self.table.setItem(row, 1, _status_item("enriched"))
+                genre = updated_tags.get("genre", "")
+                self.table.setItem(row, 2, QTableWidgetItem(
+                    f"genre={genre}" if genre else ""
+                ))
+                break
+
+    def _on_enrich_finished(self, n: int) -> None:
+        # Move on to the build phase with the (now possibly mutated) job
+        # list.
+        self._start_build(self._jobs_to_build, self._output_dir)
+
+    def _on_enrich_cancelled(self) -> None:
+        self._set_running(False)
+        self._enrich_runner = None
+        QMessageBox.information(self, "Enrichment cancelled",
+                                "Build was not started.")
+
+    def _start_build(self, jobs: list, output_dir: Path) -> None:
         self.table.setRowCount(0)
         self._row_for_target.clear()
         for j in jobs:

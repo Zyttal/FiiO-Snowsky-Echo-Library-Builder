@@ -134,6 +134,92 @@ class PlaylistPushRunner(QRunnable):
         self.signals.finished.emit(pushed)
 
 
+class EnrichmentSignals(QObject):
+    """Per-item signals emitted by TagEnrichmentRunner."""
+    started = Signal(int)             # total items to look up
+    progress = Signal(int, str)       # index, "Artist - Title" label
+    enriched = Signal(int, dict)      # index, updated tags dict
+    finished = Signal(int)            # number actually enriched
+    cancelled = Signal()
+
+
+class TagEnrichmentRunner(QRunnable):
+    """Walk a list of (index, SourceTags) pairs through MusicBrainz and
+    fill in missing genre. Runs sequentially because MusicBrainz's 1-req
+    /sec rate limit makes parallelism pointless.
+
+    Inputs are plain dicts (the SourceTags __dict__) so this is safe to
+    serialise into a Qt signal; the build path applies the returned
+    dicts back to the in-memory list before queueing conversion jobs.
+    """
+
+    def __init__(self, items: list[tuple[int, dict]]) -> None:
+        super().__init__()
+        # items: list of (index, source_tags_dict)
+        self.items = items
+        self.signals = EnrichmentSignals()
+        self._cancel = False
+        self._cache: dict[tuple[str, str, str | None], dict] = {}
+
+    def cancel(self) -> None:
+        self._cancel = True
+
+    def run(self) -> None:
+        from src.musicbrainz import enrich
+
+        self.signals.started.emit(len(self.items))
+        actually_enriched = 0
+        for i, (job_idx, src_tags) in enumerate(self.items):
+            if self._cancel:
+                self.signals.cancelled.emit()
+                return
+            label = f"{src_tags.get('artist', '?')} - {src_tags.get('title', '?')}"
+            self.signals.progress.emit(i, label)
+
+            # Skip items that don't need enrichment.
+            if src_tags.get("genre"):
+                continue
+
+            key = (
+                src_tags.get("artist", "") or "",
+                src_tags.get("title", "") or "",
+                src_tags.get("album", "") or None,
+            )
+            if key in self._cache:
+                meta = self._cache[key]
+            else:
+                try:
+                    enriched = enrich(
+                        src_tags.get("artist", ""),
+                        src_tags.get("title", ""),
+                        album_hint=src_tags.get("album"),
+                    )
+                except Exception:
+                    enriched = None
+                meta = {
+                    "genre": enriched.genre if enriched else None,
+                    "date": enriched.date if enriched else None,
+                    "album_artist": enriched.album_artist if enriched else None,
+                } if enriched else {}
+                self._cache[key] = meta
+
+            updated = dict(src_tags)
+            mb_genre = meta.get("genre")
+            if mb_genre and not updated.get("genre"):
+                updated["genre"] = mb_genre
+            mb_date = meta.get("date")
+            if mb_date and not updated.get("date"):
+                updated["date"] = mb_date
+            mb_aa = meta.get("album_artist")
+            if mb_aa and not updated.get("album_artist"):
+                updated["album_artist"] = mb_aa
+            if updated != src_tags:
+                self.signals.enriched.emit(job_idx, updated)
+                actually_enriched += 1
+
+        self.signals.finished.emit(actually_enriched)
+
+
 class LibraryScanSignals(QObject):
     """Per-file signals emitted by LibraryScanRunner."""
     started = Signal(int)             # total flac files discovered

@@ -31,6 +31,19 @@ flow, plus three new top-level features:
   root, preserving the manifest, FiiO info files, and Playlists/. Only
   ever operates on the path you've loaded — the Echo's internal flash
   is unreachable from the host anyway.
+- **MusicBrainz tag enrichment during build** — new checkbox on the
+  Build tab plus `enrich_tags_via_musicbrainz` config option. Before
+  the conversion phase, queries MusicBrainz for every source track
+  missing a GENRE / DATE / ALBUMARTIST and fills them in. Same
+  enrichment the downloader has used; now applied to existing source
+  FLACs too. Cached per session, runs on a background thread so the
+  GUI stays responsive.
+- **Source-as-album detection** — `discover()` now recognises when the
+  Source path points directly at an album folder (one that contains
+  `Disc N/` subfolders or audio files at its root) and treats it as
+  the album instead of mis-iterating its disc subdirs as separate
+  albums. Fixes the case where pointing the GUI's Source at a
+  multi-disc playlist would produce 333 files all numbered "01".
 - **YouTube downloader** — feed a song list to the Download tab (or
   `./build_library.py download --list ...`); each line is enriched via
   MusicBrainz and landed in the source tree as a tagged FLAC ready for
