@@ -227,6 +227,7 @@ class BuildTab(QWidget):
 
         if dry_run:
             self.table.setRowCount(0)
+            self._row_for_target.clear()
             for j in jobs[:200]:
                 self._add_or_update_row(
                     target=str(j.target),
