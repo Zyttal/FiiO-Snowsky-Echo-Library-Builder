@@ -97,6 +97,17 @@ def push_playlist(
             shutil.copy2(src, target)
             report.copied.append(target)
             status = "copied"
+        # Carry the .lrc sidecar alongside the audio. Lyrics live in
+        # <source>.lrc next to the track; the FiiO Echo reads
+        # <target>.lrc on playback. Always copy when the sidecar
+        # exists, even when the audio was up-to-date — the .lrc may
+        # have landed after a previous push.
+        lrc_src = src.with_suffix(".lrc")
+        lrc_dst = target.with_suffix(".lrc")
+        if lrc_src.is_file() and not _up_to_date(lrc_src, lrc_dst):
+            shutil.copy2(lrc_src, lrc_dst)
+        if lrc_src.is_file():
+            expected_targets.add(lrc_dst)
         if progress_callback:
             progress_callback(index, total, status, target_name)
 
