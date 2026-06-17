@@ -1,8 +1,17 @@
-"""Playlists tab — manage folder-as-playlist memberships and push to card.
+"""Upload to Device tab — pick playlists and albums to push to the SD card.
 
-Left pane: list of playlists with track counts.
-Right pane: tracks in the selected playlist.
-Buttons: New, Delete, Push selected, Push all.
+Layout:
+  Library + SD card pickers at the top.
+  Left pane: vertical splitter — Playlists on top, Albums on bottom,
+             each with a filter line edit above the list.
+  Right pane: tracks in the selected playlist or album.
+  Buttons: New / Delete (playlists only), Push selected, Push all,
+           Cancel, Reload.
+
+Replaces the v0.1.5 Device tab — the favorites-as-M3U export wasn't
+landing for anyone because the FiiO Echo firmware can't play M3U
+anyway. The Library tab's favorite-star still flips manifest entries;
+the playlists tab pushes them by inclusion in a playlist.
 """
 from __future__ import annotations
 
@@ -28,7 +37,7 @@ from PySide6.QtWidgets import (
 from gui.workers import PlaylistPushRunner
 
 
-class PlaylistsTab(QWidget):
+class UploadTab(QWidget):
     library_changed = Signal(Path)  # output_dir, when memberships change
 
     def __init__(self) -> None:
