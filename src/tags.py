@@ -1,0 +1,149 @@
+"""Read source tags and write Echo-friendly tags on the output.
+
+Echo quirks we care about:
+- FLAC must use Vorbis comments only; embedded ID3v2 confuses some firmwares
+- TRACKNUMBER must be the bare number, not 'N/Total'
+- Cover art is embedded as a FLAC METADATA_BLOCK_PICTURE (front cover)
+- MP3 mirror uses ID3v2.3 (Echo reads it; v2.4 sometimes mis-parses)
+"""
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass
+from pathlib import Path
+
+from mutagen.flac import FLAC, Picture
+from mutagen.id3 import APIC, ID3, TALB, TDRC, TIT2, TPE1, TPE2, TPOS, TRCK
+from mutagen.mp3 import MP3
+
+# Common filename patterns we fall back to when tags are missing.
+# Examples:
+#   "03 - The Beatles - Yesterday.flac"  -> n=3, artist=The Beatles, title=Yesterday
+#   "12 - Stairway to Heaven.flac"       -> n=12, title=Stairway to Heaven
+_FNAME_RE_FULL = re.compile(r"^\s*(\d+)\s*[-_.]\s*(.+?)\s*[-_.]\s*(.+?)\s*$")
+_FNAME_RE_SHORT = re.compile(r"^\s*(\d+)\s*[-_.]\s*(.+?)\s*$")
+
+
+@dataclass
+class SourceTags:
+    artist: str = "Unknown Artist"
+    album: str = "Unknown Album"
+    title: str = "Unknown Title"
+    track_no: int | None = None
+    disc_no: int | None = None
+    date: str | None = None
+    genre: str | None = None
+    album_artist: str | None = None
+
+
+def _first(d, *keys) -> str | None:
+    for k in keys:
+        v = d.get(k)
+        if v:
+            if isinstance(v, list):
+                v = v[0]
+            return str(v).strip() or None
+    return None
+
+
+def _track_int(raw) -> int | None:
+    if raw is None:
+        return None
+    s = str(raw).split("/")[0].strip()
+    try:
+        return int(s)
+    except ValueError:
+        return None
+
+
+def from_filename(path: Path) -> tuple[int | None, str | None, str | None]:
+    stem = path.stem
+    m = _FNAME_RE_FULL.match(stem)
+    if m:
+        return int(m.group(1)), m.group(2), m.group(3)
+    m = _FNAME_RE_SHORT.match(stem)
+    if m:
+        return int(m.group(1)), None, m.group(2)
+    return None, None, stem
+
+
+def read_source(path: Path, fallback_album: str, disc_hint: int | None) -> SourceTags:
+    """Read tags from a FLAC; backfill missing values from the filename."""
+    f = FLAC(path)
+    t = f.tags or {}
+    fn_n, fn_artist, fn_title = from_filename(path)
+
+    out = SourceTags(
+        artist=_first(t, "artist", "ARTIST") or fn_artist or "Unknown Artist",
+        album=_first(t, "album", "ALBUM") or fallback_album,
+        title=_first(t, "title", "TITLE") or fn_title or path.stem,
+        track_no=_track_int(_first(t, "tracknumber", "TRACKNUMBER")) or fn_n,
+        disc_no=_track_int(_first(t, "discnumber", "DISCNUMBER")) or disc_hint,
+        date=_first(t, "date", "DATE", "year", "YEAR"),
+        genre=_first(t, "genre", "GENRE"),
+        album_artist=_first(t, "albumartist", "ALBUMARTIST", "album artist"),
+    )
+    return out
+
+
+def write_flac(target: Path, tags: SourceTags, picture_bytes: bytes | None) -> None:
+    """Write clean Vorbis comments on an output FLAC. Removes any ID3v2 block."""
+    f = FLAC(target)
+    # Ensure a fresh Vorbis comment block. f.delete() empties but does NOT
+    # remove the block, so add_tags() would raise FLACVorbisError on the
+    # second pass — clear by hand instead.
+    if f.tags is None:
+        f.add_tags()
+    else:
+        f.tags.clear()
+
+    f.tags["ARTIST"] = tags.artist
+    f.tags["ALBUM"] = tags.album
+    f.tags["TITLE"] = tags.title
+    if tags.track_no is not None:
+        f.tags["TRACKNUMBER"] = str(tags.track_no)
+    if tags.disc_no is not None:
+        f.tags["DISCNUMBER"] = str(tags.disc_no)
+    if tags.date:
+        f.tags["DATE"] = tags.date
+    if tags.genre:
+        f.tags["GENRE"] = tags.genre
+    if tags.album_artist:
+        f.tags["ALBUMARTIST"] = tags.album_artist
+
+    f.clear_pictures()
+    if picture_bytes:
+        pic = Picture()
+        pic.type = 3  # front cover
+        pic.mime = "image/jpeg"
+        pic.desc = "Cover"
+        pic.data = picture_bytes
+        f.add_picture(pic)
+
+    f.save()
+
+
+def write_mp3(target: Path, tags: SourceTags, picture_bytes: bytes | None) -> None:
+    """Write ID3v2.3 tags on an output MP3."""
+    audio = MP3(target, ID3=ID3)
+    if audio.tags is None:
+        audio.add_tags()
+    audio.tags.delete()
+    audio.tags.add(TPE1(encoding=3, text=tags.artist))
+    audio.tags.add(TALB(encoding=3, text=tags.album))
+    audio.tags.add(TIT2(encoding=3, text=tags.title))
+    if tags.track_no is not None:
+        audio.tags.add(TRCK(encoding=3, text=str(tags.track_no)))
+    if tags.disc_no is not None:
+        audio.tags.add(TPOS(encoding=3, text=str(tags.disc_no)))
+    if tags.album_artist:
+        audio.tags.add(TPE2(encoding=3, text=tags.album_artist))
+    if tags.date:
+        audio.tags.add(TDRC(encoding=3, text=tags.date))
+    if picture_bytes:
+        audio.tags.add(
+            APIC(encoding=3, mime="image/jpeg", type=3, desc="Cover", data=picture_bytes)
+        )
+    # v2.3 for max compatibility on small DAPs
+    audio.tags.update_to_v23()
+    audio.save(v2_version=3)

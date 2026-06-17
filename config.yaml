@@ -1,0 +1,27 @@
+# echo-library-builder defaults.
+# Every field is optional; missing values fall back to the constants in
+# src/config.py. Pass --config <path> to override.
+
+# Audio (FLAC primary output)
+target_sample_rate: 44100      # Hz. Echo supports up to 192000.
+target_bit_depth: 16           # bits. Echo's EQ only works at <=16-bit anyway.
+flac_compression_level: 5      # 0=fast, 8=smallest. 5 is the safe FLAC default.
+
+# MP3 mirror / --format mp3
+mp3_quality: 0                 # LAME V-flag. 0 is highest VBR (~245 kbps avg).
+
+# DSD (experimental, --format dsd)
+dsd_rate: 2822400              # DSD64. DSD128=5644800, DSD256=11289600.
+
+# Cover art
+max_cover_size_px: 500         # Echo indexer slows above this.
+cover_jpeg_quality: 90         # baseline JPEG quality.
+
+# Filenames
+max_segment_length: 80         # per path segment (artist/album/title each).
+# Characters that crash the Echo's parser. & gets a friendly replacement.
+forbidden_chars: '"<>:|?*/\\'
+ampersand_replacement: 'and'
+
+# Parallelism
+workers: null                  # null = CPU count - 1.
