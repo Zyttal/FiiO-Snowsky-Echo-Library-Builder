@@ -285,7 +285,7 @@ class BuildTab(QWidget):
             jobs = self._apply_comp_and_build_jobs(state)
             self.table.setRowCount(0)
             self._row_for_target.clear()
-            for j in jobs[:200]:
+            for j in jobs:
                 self._add_or_update_row(
                     target=str(j.target),
                     file_label=j.target.name,
@@ -294,8 +294,7 @@ class BuildTab(QWidget):
                 )
             QMessageBox.information(
                 self, "Dry run",
-                f"{len(jobs)} jobs planned. Showing first "
-                f"{min(len(jobs), 200)} in the table.",
+                f"{len(jobs)} jobs planned.",
             )
             return
 
