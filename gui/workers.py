@@ -88,6 +88,52 @@ class BuildRunner(QRunnable):
         self.signals.finished.emit(ok, err)
 
 
+class PlaylistPushSignals(QObject):
+    playlist_done = Signal(dict)        # {name, copied, up_to_date, pruned, missing}
+    finished = Signal(int)              # total playlists pushed
+
+
+class PlaylistPushRunner(QRunnable):
+    """Push one or more playlists to the SD card on a background thread.
+
+    Each playlist's copy step is sequential (we're network-I/O-bound on
+    SD writes anyway and the per-track shutil.copy2 already saturates a
+    typical card)."""
+
+    def __init__(self, library_root: Path, sd_root: Path,
+                 names: list[str], cfg_dict: dict) -> None:
+        super().__init__()
+        self.library_root = library_root
+        self.sd_root = sd_root
+        self.names = names
+        self.cfg_dict = cfg_dict
+        self.signals = PlaylistPushSignals()
+
+    def run(self) -> None:
+        from src import config as config_mod
+        from src.manifest import MANIFEST_NAME, Manifest
+        from src.playlist import push_playlist
+
+        cfg = config_mod.Config(**self.cfg_dict)
+        manifest = Manifest(self.library_root / MANIFEST_NAME)
+        pushed = 0
+        for name in self.names:
+            entries = manifest.playlist_entries(name, fmt="flac")
+            if not entries:
+                continue
+            tracks = [Path(e.target) for e in entries]
+            report = push_playlist(name, tracks, self.sd_root, cfg, prune=True)
+            self.signals.playlist_done.emit({
+                "name": name,
+                "copied": len(report.copied),
+                "up_to_date": len(report.skipped_up_to_date),
+                "pruned": len(report.pruned),
+                "missing": len(report.missing_sources),
+            })
+            pushed += 1
+        self.signals.finished.emit(pushed)
+
+
 class DownloadSignals(QObject):
     """Qt signals emitted from the download supervisor."""
     started = Signal(int)                 # total songs

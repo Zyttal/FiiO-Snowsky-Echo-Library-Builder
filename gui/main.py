@@ -26,6 +26,7 @@ from gui.device_tab import DeviceTab
 from gui.download_tab import DownloadTab
 from gui.ffmpeg_probe import find_ffmpeg, install_hint
 from gui.library_tab import LibraryTab
+from gui.playlists_tab import PlaylistsTab
 
 
 class MainWindow(QMainWindow):
@@ -41,17 +42,23 @@ class MainWindow(QMainWindow):
         self.library_tab = LibraryTab()
         self.device_tab = DeviceTab()
         self.download_tab = DownloadTab()
+        self.playlists_tab = PlaylistsTab()
         tabs.addTab(self.download_tab, "Download")
         tabs.addTab(self.build_tab, "Build")
         tabs.addTab(self.library_tab, "Library")
+        tabs.addTab(self.playlists_tab, "Playlists")
         tabs.addTab(self.device_tab, "Device")
         self.setCentralWidget(tabs)
 
         # Cross-tab wiring: build completion refreshes the library tree;
         # library tab favorite toggles propagate to the device tab's preview;
-        # finished downloads hint that the next build will pick up new files.
+        # finished downloads hint that the next build will pick up new files;
+        # playlist changes refresh the library tree's playlist annotations.
         self.build_tab.build_finished.connect(self.library_tab.reload_if_loaded)
+        self.build_tab.build_finished.connect(self.playlists_tab.set_library_root)
         self.library_tab.favorites_changed.connect(self.device_tab.note_favorites_changed)
+        self.library_tab.playlists_changed.connect(self.playlists_tab._reload)
+        self.playlists_tab.library_changed.connect(self.library_tab.reload_if_loaded)
         self.download_tab.download_finished.connect(self._on_downloads_finished)
 
     def _on_downloads_finished(self, dest_root: Path) -> None:
