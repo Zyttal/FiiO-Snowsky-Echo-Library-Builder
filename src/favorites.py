@@ -5,9 +5,12 @@ left there.
 Important: FiiO has publicly stated the Snowsky Echo's chip cannot play
 M3U playlists (Head-Fi / Reddit threads, mid-2026 — chip-level limit,
 not a missing firmware feature). The `.m3u` we write is therefore a
-durable BACKUP — useful for restoring favorites by hand after the
-device's internal list gets wiped on a firmware update, or for reading
-on another M3U-aware player. The device itself won't surface it.
+durable BACKUP — useful for restoring favorites by hand when a firmware
+flash reformats internal storage (FiiO's install notes warn this may
+happen on every update), or for reading on another M3U-aware player.
+Note: V1.3.0 (April 2026) fixed routine media-library re-scans from
+clearing Favorites, so on V1.3.0+ the only loss-of-favorites risk is a
+firmware flash. The device itself won't surface the .m3u.
 
 Format choice: CRLF-terminated, relative-path UTF-8 M3U. Maximally
 portable, parses cleanly in foobar2000, Plex, etc.

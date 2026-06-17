@@ -23,7 +23,7 @@ files fail to play. The known culprits — none documented in the manual — are
 | Track number as `3/12` | Some firmware versions display it literally | Writes bare `TRACKNUMBER=3` |
 | 24-bit / high-sample-rate FLAC | EQ silently disables above 16-bit | Downconverts to 16-bit / 44.1 kHz by default |
 | Source FLACs missing the GENRE tag | Echo shows "Unknown" for every track | Optional `default_genre` config fallback fills in a value when the source has none |
-| Favorites kept only inside the device, wiped on every firmware update | Curating means re-favoriting from scratch after every FW bump | `Favorites.m3u` push exports the curated list as a CRLF M3U backup at the SD card root — FiiO has stated the Echo's chip can't play M3U, so the file is for archival/restore, not on-device playback |
+| Favorites kept only in internal storage; firmware updates may reformat it (per FiiO's install instructions) | Curating risks loss whenever you flash a new firmware | `Favorites.m3u` push exports the curated list as a CRLF M3U backup at the SD card root — FiiO has stated the Echo's chip can't play M3U, so the file is for archival/restore, not on-device playback |
 
 Everything is configurable; the defaults match what the device prefers.
 
@@ -160,10 +160,12 @@ personal-library use on the user's own device; how you use it is on you.
 ### Favorites
 
 The Echo's on-device "Add to Favorites" list lives in internal flash and isn't
-exposed on the SD card in any documented format. Worse, the list is wiped on
-every firmware update — head-fi reports confirm users have to re-add tracks
-from scratch every time. This tool can't fix the device-side problem, but it
-can give you a durable backup:
+exposed on the SD card in any documented format. Firmware V1.3.0 (April 2026)
+fixed a bug where media-library re-scans wiped the list — on V1.3.0+ routine
+library refreshes are safe. Firmware flashes themselves still risk the list:
+FiiO's install instructions warn that "the firmware upgrade may first format
+the internal memory." This tool can't fix the device-side problem, but it
+can give you a durable backup to restore from:
 
 ```bash
 # Push manifest favorites to <SD card>/Favorites.m3u

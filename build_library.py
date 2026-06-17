@@ -420,9 +420,10 @@ def favorites():
     Heads up: FiiO has stated the Snowsky Echo's chip can't play M3U
     playlists — it's a hardware limit, not a firmware feature pending.
     `push` is therefore a pure backup/export format. It's still useful:
-    the Echo's internal favorites get wiped on every firmware update, so
-    a CRLF M3U on the SD card preserves your curated list and can be used
-    to manually re-favorite afterwards, or read by any other M3U-aware
+    FiiO's firmware install instructions warn that flashing a new
+    firmware "may first format the internal memory" — where the on-device
+    Favorites list lives — so the exported .m3u preserves your curated
+    list across firmware upgrades, and can be read by any other M3U-aware
     player on a phone/PC.
     """
 

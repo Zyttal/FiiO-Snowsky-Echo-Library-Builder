@@ -14,8 +14,10 @@ flow, plus three new top-level features:
 - **Favorites** — mark tracks in the Library tab and export them as a
   `Favorites.m3u` backup on the SD card. FiiO has stated the Echo's chip
   cannot play M3U, so the export is strictly a backup/restore format —
-  useful for re-favoriting by hand after a firmware update wipes the
-  on-device list, or for reading on any other M3U-aware player.
+  useful for re-favoriting by hand after a firmware flash reformats
+  internal storage (FW V1.3.0 fixed routine library scans from wiping
+  Favorites, but the firmware-flash risk remains), or for reading on any
+  other M3U-aware player.
 - **YouTube downloader** — feed a song list to the Download tab (or
   `./build_library.py download --list ...`); each line is enriched via
   MusicBrainz and landed in the source tree as a tagged FLAC ready for

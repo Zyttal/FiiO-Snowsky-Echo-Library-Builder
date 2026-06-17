@@ -70,8 +70,11 @@ class DeviceTab(QWidget):
             "<small><b>Heads up:</b> FiiO has stated the Snowsky Echo's "
             "chip can't play M3U playlists — the export writes a standard "
             "CRLF .m3u as a <i>backup</i>, not for on-device playback. "
-            "Useful for restoring favorites after a firmware update wipes "
-            "the internal list, or for reading on any other player.</small>"
+            "FW V1.3.0 (April 2026) fixed routine media-library re-scans "
+            "from clearing Favorites, but firmware flashes themselves may "
+            "still reformat internal storage (per FiiO's install notes), so "
+            "the export is your restore path across firmware updates and "
+            "for reading on any other player.</small>"
         )
         caveat.setWordWrap(True)
         outer.addWidget(caveat)
