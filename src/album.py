@@ -30,8 +30,7 @@ _AUDIO_EXTS = {".flac", ".m4a", ".opus", ".mp3", ".ogg", ".wav"}
 
 @dataclass
 class AlbumPushReport:
-    artist: str
-    album: str
+    album_dir: Path
     target_dir: Path
     copied: list[Path] = field(default_factory=list)
     skipped_up_to_date: list[Path] = field(default_factory=list)
@@ -42,8 +41,6 @@ class AlbumPushReport:
 
 def push_album(
     album_dir: Path,
-    artist_name: str,
-    album_name: str,
     sd_root: Path,
     cfg: Config,
     prune: bool = True,
@@ -51,22 +48,24 @@ def push_album(
     cancel_check=None,
 ) -> AlbumPushReport:
     """Copy every audio file in `album_dir` to
-    <sd_root>/Albums/<sanitized_artist>/<sanitized_album>/, preserving
-    filenames.
+    <sd_root>/Albums/<sanitized(album_dir.name)>/, preserving filenames.
 
     `progress_callback` is invoked as callback(index, total, status,
     target_name) after each track, mirroring `push_playlist`.
     `cancel_check` returns True to abort. Returns an AlbumPushReport.
+
+    Folder name handling: we keep the source's `<Album> - <Artist>`
+    layout from `build_library.py build` rather than splitting it back
+    into separate path segments — fewer assumptions about source-name
+    grammar, and a flatter FAT32 layout is friendlier to the Echo's
+    indexer.
     """
     album_dir = album_dir.resolve()
     sd_root = sd_root.resolve()
-    artist_seg = segment(artist_name, cfg)
-    album_seg = segment(album_name, cfg)
-    target_dir = sd_root / ALBUMS_DIR / artist_seg / album_seg
+    folder_seg = segment(album_dir.name, cfg)
+    target_dir = sd_root / ALBUMS_DIR / folder_seg
     target_dir.mkdir(parents=True, exist_ok=True)
-    report = AlbumPushReport(
-        artist=artist_name, album=album_name, target_dir=target_dir,
-    )
+    report = AlbumPushReport(album_dir=album_dir, target_dir=target_dir)
 
     # Audio files in the album, sorted by leading track number when the
     # filename starts with one, so progress reads in playback order.

@@ -418,13 +418,13 @@ def _read_album_cover(album_dir: Path, sample_flac=None) -> bytes | None:
 
 class AlbumPushSignals(QObject):
     """Per-album signals emitted by AlbumPushRunner."""
-    started = Signal(int)                            # total albums queued
-    album_started = Signal(str, str, int)            # artist, album, track count
-    track_progress = Signal(str, str, int, int, str, str)
-    # ^ artist, album, index, total, status, filename
+    started = Signal(int)                              # total albums queued
+    album_started = Signal(str, int)                   # folder name, track count
+    track_progress = Signal(str, int, int, str, str)
+    # ^ folder name, index, total, status, filename
     album_done = Signal(dict)
-    # ^ {artist, album, copied, up_to_date, pruned, cover_written, lrc_failed}
-    finished = Signal(int)                           # total albums pushed
+    # ^ {folder, copied, up_to_date, pruned, cover_written, lrc_failed}
+    finished = Signal(int)                             # total albums pushed
     cancelled = Signal()
     error = Signal(str)
 
@@ -433,18 +433,17 @@ class AlbumPushRunner(QRunnable):
     """Push one or more album folders to the SD card on a background
     thread. Each album's copy step is sequential (SD I/O dominates).
 
-    `albums` is a list of (album_dir, artist_name, album_name) triples;
-    the artist/album strings come from the Library tab's tree rows so
-    sanitization matches what the user sees."""
+    `album_dirs` is a flat list of album folder paths — the Upload tab
+    derives them from the library tree's manifest entries or the FS."""
 
     def __init__(
         self,
-        albums: list[tuple[Path, str, str]],
+        album_dirs: list[Path],
         sd_root: Path,
         cfg_dict: dict,
     ) -> None:
         super().__init__()
-        self.albums = albums
+        self.album_dirs = album_dirs
         self.sd_root = sd_root
         self.cfg_dict = cfg_dict
         self.signals = AlbumPushSignals()
@@ -459,12 +458,13 @@ class AlbumPushRunner(QRunnable):
 
         try:
             cfg = config_mod.Config(**self.cfg_dict)
-            self.signals.started.emit(len(self.albums))
+            self.signals.started.emit(len(self.album_dirs))
             pushed = 0
-            for album_dir, artist_name, album_name in self.albums:
+            for album_dir in self.album_dirs:
                 if self._cancel:
                     self.signals.cancelled.emit()
                     return
+                folder_name = album_dir.name
                 # Pre-count tracks for the album_started signal so the
                 # progress bar has a real range from the start.
                 track_count = sum(
@@ -474,21 +474,17 @@ class AlbumPushRunner(QRunnable):
                         ".flac", ".m4a", ".opus", ".mp3", ".ogg", ".wav"
                     }
                 )
-                self.signals.album_started.emit(
-                    artist_name, album_name, track_count,
-                )
+                self.signals.album_started.emit(folder_name, track_count)
 
                 def emit_progress(
-                    idx, total, status, filename,
-                    _artist=artist_name, _album=album_name,
+                    idx, total, status, filename, _folder=folder_name,
                 ):
                     self.signals.track_progress.emit(
-                        _artist, _album, idx, total, status, filename,
+                        _folder, idx, total, status, filename,
                     )
 
                 report = push_album(
-                    album_dir, artist_name, album_name,
-                    self.sd_root, cfg, prune=True,
+                    album_dir, self.sd_root, cfg, prune=True,
                     progress_callback=emit_progress,
                     cancel_check=lambda: self._cancel,
                 )
@@ -496,8 +492,7 @@ class AlbumPushRunner(QRunnable):
                     self.signals.cancelled.emit()
                     return
                 self.signals.album_done.emit({
-                    "artist": artist_name,
-                    "album": album_name,
+                    "folder": folder_name,
                     "copied": len(report.copied),
                     "up_to_date": len(report.skipped_up_to_date),
                     "pruned": len(report.pruned),
