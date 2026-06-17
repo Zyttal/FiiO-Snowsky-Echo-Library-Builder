@@ -426,10 +426,19 @@ class LyricsSignals(QObject):
 
 
 class LyricsRunner(QRunnable):
-    """Walk every manifest entry and drop a <track>.lrc sidecar fetched
-    from LRCLIB. Skips tracks that already have a sidecar unless
-    `overwrite=True`. Sequential to stay within LRCLIB's friendly-usage
-    expectations (no documented hard rate limit, but no need to hammer)."""
+    """Walk every audio file under `library_root` and drop a <track>.lrc
+    sidecar fetched from LRCLIB. Skips tracks that already have a
+    sidecar unless `overwrite=True`. Sequential to stay within LRCLIB's
+    friendly-usage expectations (no documented hard rate limit, but no
+    need to hammer).
+
+    Walks the FS directly (not the manifest) so the user can fetch
+    lyrics for everything the Library tab shows them, regardless of
+    whether each track has a manifest entry."""
+
+    # Mirror what the Echo can play — keep this in sync with the
+    # output strategies in src/convert.py.
+    AUDIO_EXTS = {".flac", ".m4a", ".opus", ".mp3", ".ogg"}
 
     def __init__(self, library_root: Path, overwrite: bool = False) -> None:
         super().__init__()
@@ -442,14 +451,14 @@ class LyricsRunner(QRunnable):
         self._cancel = True
 
     def run(self) -> None:
-        from src.manifest import MANIFEST_NAME, Manifest
         from src import lyrics as lyrics_mod
         import mutagen
 
         try:
-            manifest = Manifest(self.library_root / MANIFEST_NAME)
-            entries = manifest.all_entries()
-            targets = [Path(e.target) for e in entries if Path(e.target).exists()]
+            targets = sorted(
+                p for p in self.library_root.rglob("*")
+                if p.is_file() and p.suffix.lower() in self.AUDIO_EXTS
+            )
             self.signals.started.emit(len(targets))
             fetched = skipped = misses = errors = 0
             for i, target in enumerate(targets):
