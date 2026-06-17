@@ -445,7 +445,7 @@ def favorites_push(output_dir, sd_root, fmt, name):
     a portable list of relative paths, useful for restoring favorites
     manually after a firmware wipe, or reading on any other device.
     """
-    from src.favorites import write_playlist
+    from src.favorites import EmptyPlaylistError, write_playlist
 
     output_dir = output_dir.resolve()
     sd_root = (sd_root or output_dir).resolve()
@@ -456,13 +456,27 @@ def favorites_push(output_dir, sd_root, fmt, name):
                    "Mark tracks via the GUI's Library tab first.")
         return
     tracks = [Path(e.target) for e in favs]
-    written = write_playlist(sd_root, tracks, name=name)
-    click.echo(f"Exported {len(tracks)} tracks to {written}.")
-    click.echo("(Backup format — the Echo's chip cannot play M3U directly.)")
+    try:
+        written = write_playlist(sd_root, tracks, name=name)
+    except EmptyPlaylistError as e:
+        click.echo(
+            f"ERROR: {e.skipped} favorited tracks all live outside "
+            f"--sd-root ({sd_root}).\n"
+            "The M3U would have zero entries — refusing to write it.\n"
+            "Copy your library to the SD card first (rsync), then point "
+            "--sd-root at the on-card library root and re-run.",
+            err=True,
+        )
+        sys.exit(2)
+    n = len(tracks)
     skipped = sum(1 for t in tracks if sd_root not in t.resolve().parents)
+    click.echo(f"Exported {n - skipped}/{n} tracks to {written}.")
+    click.echo("(Backup format — the Echo's chip cannot play M3U directly.)")
     if skipped:
-        click.echo(f"  ({skipped} tracks live outside --sd-root and were skipped.)",
-                   err=True)
+        click.echo(
+            f"  ({skipped} tracks live outside --sd-root and were skipped.)",
+            err=True,
+        )
 
 
 @favorites.command("pull")
@@ -470,16 +484,182 @@ def favorites_push(output_dir, sd_root, fmt, name):
               required=True, help="Mounted SD card root.")
 def favorites_pull(sd_root):
     """Best-effort: list what the Echo considers favorited on the SD card."""
-    from src.favorites import read_device_favorites
+    from src.favorites import read_device_favorites_report
 
-    tracks = read_device_favorites(sd_root.resolve())
-    if not tracks:
-        click.echo("No favorites found on the SD card. The Echo may keep them in "
-                   "internal flash only; use `favorites push` to seed an M3U.")
+    report = read_device_favorites_report(sd_root.resolve())
+
+    if not report.any_source_found:
+        click.echo(
+            "No favorites file found on the SD card. The Echo keeps its "
+            "favorites in internal flash, not on the card — `favorites pull` "
+            "can only see files we (or another tool) have already written. "
+            "Use `favorites push` to export one."
+        )
         return
-    click.echo(f"Found {len(tracks)} favorite tracks:")
+
+    sources = []
+    if report.m3u_files:
+        sources.append(f"{len(report.m3u_files)} M3U")
+    if report.sqlite_files:
+        sources.append(f"{len(report.sqlite_files)} sqlite")
+    if report.text_files:
+        sources.append(f"{len(report.text_files)} text list")
+    src_str = ", ".join(sources)
+
+    if not report.tracks:
+        click.echo(
+            f"Found {src_str} on the card but no track entries inside. "
+            "Almost always: a previous `favorites push` ran with --sd-root "
+            "pointed at a folder that didn't contain your library, so every "
+            "track got skipped and the M3U is header-only. Copy the library "
+            "to the card and re-run `push`."
+        )
+        for p in report.m3u_files + report.sqlite_files + report.text_files:
+            click.echo(f"  ({p})")
+        return
+
+    click.echo(f"Found {len(report.tracks)} favorite tracks across {src_str}:")
+    for t in report.tracks:
+        suffix = "  (missing on card)" if t in report.tracks_missing else ""
+        click.echo(f"  {t}{suffix}")
+    if report.tracks_missing:
+        click.echo(
+            f"({len(report.tracks_missing)} referenced tracks aren't physically "
+            "on the card — either delete the m3u entry or rsync the library again.)"
+        )
+
+
+@cli.group()
+def playlist():
+    """Folder-as-playlist support: copy tracks into <SD>/Playlists/<Name>/.
+
+    The Echo can't play M3U (chip limit) but its Folder browse mode shows
+    any directory of audio as a playable group. These commands manage
+    membership in the manifest and copy the resulting files onto the SD
+    card with sequential numbering so the device plays them in order.
+
+    A song can be in multiple playlists; on FAT32/exFAT each membership
+    is a physical file copy (no hardlinks/symlinks). Disk overhead is
+    small in practice — a 30-track playlist is ~150 MB.
+    """
+
+
+@playlist.command("add")
+@click.option("--output", "output_dir", type=click.Path(exists=True, file_okay=False,
+              path_type=Path), required=True,
+              help="Output library root (where the manifest lives).")
+@click.option("--name", required=True, help="Playlist name.")
+@click.option("--track", "tracks", multiple=True, type=click.Path(path_type=Path),
+              required=True,
+              help="Target FLAC path in the library. Repeat for multiple tracks.")
+def playlist_add(output_dir, name, tracks):
+    """Add one or more tracks (by their output path) to a playlist."""
+    manifest = Manifest(output_dir.resolve() / MANIFEST_NAME)
+    added = 0
+    missing = 0
     for t in tracks:
-        click.echo(f"  {t}")
+        if manifest.add_to_playlist(Path(t).resolve(), name):
+            added += 1
+        else:
+            missing += 1
+    manifest.save()
+    click.echo(f"Added {added} tracks to '{name}'"
+               + (f"; {missing} not in manifest" if missing else "") + ".")
+
+
+@playlist.command("remove")
+@click.option("--output", "output_dir", type=click.Path(exists=True, file_okay=False,
+              path_type=Path), required=True)
+@click.option("--name", required=True, help="Playlist name.")
+@click.option("--track", "tracks", multiple=True, type=click.Path(path_type=Path),
+              required=True)
+def playlist_remove(output_dir, name, tracks):
+    """Remove tracks from a playlist (does not delete files)."""
+    manifest = Manifest(output_dir.resolve() / MANIFEST_NAME)
+    removed = 0
+    for t in tracks:
+        if manifest.remove_from_playlist(Path(t).resolve(), name):
+            removed += 1
+    manifest.save()
+    click.echo(f"Removed {removed} tracks from '{name}'.")
+
+
+@playlist.command("list")
+@click.option("--output", "output_dir", type=click.Path(exists=True, file_okay=False,
+              path_type=Path), required=True)
+@click.option("--name", default=None,
+              help="If given, list the tracks in this playlist. Otherwise list all playlists.")
+def playlist_list(output_dir, name):
+    """List playlists (or the contents of one)."""
+    manifest = Manifest(output_dir.resolve() / MANIFEST_NAME)
+    if name:
+        entries = manifest.playlist_entries(name, fmt="flac")
+        if not entries:
+            click.echo(f"Playlist '{name}' is empty or doesn't exist.")
+            return
+        click.echo(f"{len(entries)} tracks in '{name}':")
+        for e in entries:
+            click.echo(f"  {e.target}")
+        return
+    names = manifest.playlist_names()
+    if not names:
+        click.echo("No playlists yet. Use `playlist add` to start one.")
+        return
+    for n in names:
+        count = len(manifest.playlist_entries(n, fmt="flac"))
+        click.echo(f"  {n}  ({count} tracks)")
+
+
+@playlist.command("push")
+@click.option("--output", "output_dir", type=click.Path(exists=True, file_okay=False,
+              path_type=Path), required=True,
+              help="Output library root (manifest source).")
+@click.option("--sd-root", type=click.Path(file_okay=False, path_type=Path),
+              required=True,
+              help="Mounted SD card root. Playlists land in <sd-root>/Playlists/.")
+@click.option("--name", default=None,
+              help="Push this playlist only. Omit to push every playlist in the manifest.")
+@click.option("--prune/--no-prune", default=True, show_default=True,
+              help="Delete stale tracks on the card that the playlist no longer contains.")
+@click.option("--config", "config_path", type=click.Path(path_type=Path), default=None,
+              help="Path to config.yaml (defaults to ./config.yaml).")
+def playlist_push(output_dir, sd_root, name, prune, config_path):
+    """Copy playlist tracks to the SD card as folders the Echo can browse."""
+    from src.playlist import push_playlist
+
+    output_dir = output_dir.resolve()
+    sd_root = sd_root.resolve()
+    sd_root.mkdir(parents=True, exist_ok=True)
+
+    cfg_path = config_path or Path(__file__).parent / "config.yaml"
+    cfg = config_mod.load(cfg_path)
+
+    manifest = Manifest(output_dir / MANIFEST_NAME)
+    targets = [name] if name else manifest.playlist_names()
+    if not targets:
+        click.echo("No playlists in the manifest. Use `playlist add` first.")
+        return
+
+    for pl in targets:
+        entries = manifest.playlist_entries(pl, fmt="flac")
+        if not entries:
+            click.echo(f"  '{pl}': empty, skipped.")
+            continue
+        tracks = [Path(e.target) for e in entries]
+        report = push_playlist(pl, tracks, sd_root, cfg, prune=prune)
+        click.echo(
+            f"  '{pl}' -> {report.target_dir}: "
+            f"{len(report.copied)} copied, "
+            f"{len(report.skipped_up_to_date)} up-to-date, "
+            f"{len(report.pruned)} pruned"
+            + (f", cover.jpg written" if report.cover_written else "")
+        )
+        if report.missing_sources:
+            click.echo(
+                f"    ({len(report.missing_sources)} source tracks missing — "
+                "build them first or remove from the playlist.)",
+                err=True,
+            )
 
 
 if __name__ == "__main__":

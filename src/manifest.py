@@ -8,7 +8,7 @@ Re-running with no changes is O(scan) — no ffmpeg, no mutagen, no Pillow.
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 MANIFEST_NAME = ".echo-library-manifest.json"
@@ -22,6 +22,7 @@ class Entry:
     source_mtime: float
     source_size: int
     favorite: bool = False
+    playlists: list[str] = field(default_factory=list)
 
 
 class Manifest:
@@ -86,6 +87,7 @@ class Manifest:
             source_mtime=st.st_mtime,
             source_size=st.st_size,
             favorite=prev.favorite if prev else False,
+            playlists=list(prev.playlists) if prev else [],
         )
 
     def forget(self, source: Path, fmt: str) -> Entry | None:
@@ -115,3 +117,44 @@ class Manifest:
             e for e in self._entries.values()
             if e.favorite and (fmt is None or e.fmt == fmt)
         ]
+
+    def add_to_playlist(self, target: Path, playlist: str) -> bool:
+        """Tag the entry at `target` as belonging to `playlist`. Returns
+        True on update. Names are kept verbatim — case and whitespace
+        matter, the Echo's folder browser displays them directly."""
+        target_str = str(target)
+        for entry in self._entries.values():
+            if entry.target != target_str:
+                continue
+            if playlist not in entry.playlists:
+                entry.playlists.append(playlist)
+                return True
+            return False
+        return False
+
+    def remove_from_playlist(self, target: Path, playlist: str) -> bool:
+        target_str = str(target)
+        for entry in self._entries.values():
+            if entry.target != target_str:
+                continue
+            if playlist in entry.playlists:
+                entry.playlists.remove(playlist)
+                return True
+            return False
+        return False
+
+    def playlist_entries(
+        self, playlist: str, fmt: str | None = None,
+    ) -> list[Entry]:
+        """All entries in `playlist`. Filter by format if given."""
+        return [
+            e for e in self._entries.values()
+            if playlist in e.playlists and (fmt is None or e.fmt == fmt)
+        ]
+
+    def playlist_names(self) -> list[str]:
+        """All distinct playlist names present in the manifest, sorted."""
+        names: set[str] = set()
+        for e in self._entries.values():
+            names.update(e.playlists)
+        return sorted(names)

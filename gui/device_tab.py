@@ -110,7 +110,7 @@ class DeviceTab(QWidget):
         return sys.platform.startswith("win")
 
     def _pull(self) -> None:
-        from src.favorites import read_device_favorites
+        from src.favorites import read_device_favorites_report
         sd = self.sd_edit.text().strip()
         if not sd:
             QMessageBox.warning(self, "No SD card path", "Set the SD card root first.")
@@ -119,20 +119,53 @@ class DeviceTab(QWidget):
         if not sd_root.is_dir():
             QMessageBox.warning(self, "Not a folder", f"{sd_root} is not a folder.")
             return
-        tracks = read_device_favorites(sd_root)
+
+        report = read_device_favorites_report(sd_root)
         self.list.clear()
-        if not tracks:
+
+        if not report.any_source_found:
             self.status.setText(
-                "No favorites file found on the SD card. The Echo may keep "
-                "favorites in internal flash only — use Push to seed one."
+                "No favorites file found on the SD card. The Echo keeps its "
+                "internal Favorites in flash (not on the card), so Pull only "
+                "surfaces files written by Push or by another tool. Use Push "
+                "to export one."
             )
             return
-        for t in tracks:
-            self.list.addItem(QListWidgetItem(str(t)))
-        self.status.setText(f"Found {len(tracks)} favorites.")
+
+        sources = []
+        if report.m3u_files:
+            sources.append(f"{len(report.m3u_files)} M3U")
+        if report.sqlite_files:
+            sources.append(f"{len(report.sqlite_files)} sqlite")
+        if report.text_files:
+            sources.append(f"{len(report.text_files)} text list")
+        src_str = ", ".join(sources)
+
+        if not report.tracks:
+            for p in report.m3u_files + report.sqlite_files + report.text_files:
+                self.list.addItem(QListWidgetItem(f"({p}) — empty"))
+            self.status.setText(
+                f"Found {src_str} on the card but with zero track entries. "
+                "Almost always: a previous Push ran with the SD card pointing "
+                "at a folder that didn't already contain your library, so "
+                "every track got skipped. Copy your library to the card "
+                "(rsync) and re-run Push."
+            )
+            return
+
+        for t in report.tracks:
+            label = str(t)
+            if t in report.tracks_missing:
+                label += "   (missing on card)"
+            self.list.addItem(QListWidgetItem(label))
+        msg = f"Found {len(report.tracks)} favorites across {src_str}."
+        if report.tracks_missing:
+            msg += (f" {len(report.tracks_missing)} are referenced but not "
+                    "physically on the card.")
+        self.status.setText(msg)
 
     def _push(self) -> None:
-        from src.favorites import write_playlist
+        from src.favorites import EmptyPlaylistError, write_playlist
         from src.manifest import MANIFEST_NAME, Manifest
 
         sd = self.sd_edit.text().strip()
@@ -169,9 +202,25 @@ class DeviceTab(QWidget):
             return
 
         tracks = [Path(e.target) for e in favs]
-        written = write_playlist(sd_root, tracks)
+        try:
+            written = write_playlist(sd_root, tracks)
+        except EmptyPlaylistError as e:
+            QMessageBox.critical(
+                self, "Nothing to export",
+                f"All {e.skipped} favorited tracks live outside the SD card "
+                f"root you set ({sd_root}).\n\n"
+                "The library has to physically be on the SD card before the "
+                "M3U paths can make sense. Steps:\n\n"
+                "  1. rsync your Echo-Library tree to the SD card\n"
+                "  2. Point this tab at <SD card>/Music/ (or wherever the "
+                "library landed on the card)\n"
+                "  3. Push again",
+            )
+            return
+
+        n = len(tracks)
         skipped = sum(1 for t in tracks if sd_root not in t.resolve().parents)
-        msg = f"Exported {len(tracks) - skipped} tracks to {written.name}."
+        msg = f"Exported {n - skipped}/{n} tracks to {written.name}."
         if skipped:
             msg += (f"\n({skipped} favorited tracks live outside the SD card "
                     "root and were skipped — copy the library to the card "

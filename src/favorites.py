@@ -26,9 +26,38 @@ from __future__ import annotations
 
 import re
 import sqlite3
+from dataclasses import dataclass, field
 from pathlib import Path
 
 PLAYLIST_NAME = "Favorites.m3u"
+
+
+class EmptyPlaylistError(ValueError):
+    """Raised when write_playlist would otherwise write a header-only M3U.
+
+    Carries the count of tracks that were skipped (lived outside sd_root)
+    so the caller can construct a helpful error message.
+    """
+    def __init__(self, skipped: int):
+        super().__init__(
+            f"playlist would be empty — all {skipped} tracks live outside "
+            f"the SD card root. Copy the library to the card first."
+        )
+        self.skipped = skipped
+
+
+@dataclass
+class FavoritesReport:
+    """What `read_device_favorites_report` actually found on the card."""
+    m3u_files: list[Path] = field(default_factory=list)
+    sqlite_files: list[Path] = field(default_factory=list)
+    text_files: list[Path] = field(default_factory=list)
+    tracks: list[Path] = field(default_factory=list)
+    tracks_missing: list[Path] = field(default_factory=list)
+
+    @property
+    def any_source_found(self) -> bool:
+        return bool(self.m3u_files or self.sqlite_files or self.text_files)
 
 # Hidden directories FiiO firmwares have historically used to store
 # device-side state (per Head-Fi/forum reports across the M-series). Order
@@ -42,11 +71,13 @@ def write_playlist(
     name: str = PLAYLIST_NAME,
 ) -> Path:
     """Write a CRLF M3U at the SD card root. Paths are written relative to
-    `sd_root`, with forward slashes (FiiO accepts both; forward keeps the
-    file portable). Returns the written path."""
+    `sd_root`, with forward slashes. Raises EmptyPlaylistError if none of
+    the supplied tracks live under sd_root — writing a header-only M3U is
+    a common UX trap (Pull then claims "no favorites found")."""
     sd_root = sd_root.resolve()
     playlist_path = sd_root / name
     lines = ["#EXTM3U"]
+    skipped = 0
     for track in tracks:
         track = track.resolve()
         try:
@@ -54,8 +85,12 @@ def write_playlist(
         except ValueError:
             # Track lives outside the SD card root — skip rather than write
             # an absolute path that won't resolve on the device.
+            skipped += 1
             continue
         lines.append(str(rel).replace("\\", "/"))
+    if len(lines) == 1:
+        # Only the #EXTM3U header — refuse rather than write a stub file.
+        raise EmptyPlaylistError(skipped=skipped)
     playlist_path.write_text(
         "\r\n".join(lines) + "\r\n", encoding="utf-8", newline=""
     )
@@ -63,34 +98,46 @@ def write_playlist(
 
 
 def read_device_favorites(sd_root: Path) -> list[Path]:
-    """Return absolute paths of tracks the device considers favorited.
+    """Backwards-compatible: returns the same list of track paths the GUI
+    used to consume. Drops the existence filter that hid the "empty M3U"
+    UX trap; callers that want to know which tracks aren't on the card
+    should use `read_device_favorites_report` instead."""
+    return read_device_favorites_report(sd_root).tracks
+
+
+def read_device_favorites_report(sd_root: Path) -> FavoritesReport:
+    """Structured probe: which source files were found, what they
+    reference, which referenced tracks aren't physically on the card.
 
     Three probes, in order:
       1. Any .m3u/.m3u8 named like 'favorite*' at the SD root or hidden dirs.
-      2. SQLite databases under known FiiO hidden dirs — look for tables/cols
-         named like 'favorite', 'starred', 'rating'.
+      2. SQLite databases under known FiiO hidden dirs.
       3. Plain-text lists named 'favorites.txt' or 'starred.txt'.
 
-    Returns [] if nothing is found. Never raises on a malformed source;
-    skip-and-continue instead.
+    Never raises on a malformed source; skip-and-continue instead.
     """
+    report = FavoritesReport()
     sd_root = sd_root.resolve()
     if not sd_root.exists():
-        return []
+        return report
 
-    found: list[Path] = []
-    found.extend(_probe_m3u(sd_root))
-    found.extend(_probe_sqlite(sd_root))
-    found.extend(_probe_textlist(sd_root))
+    m3u_files, m3u_tracks = _probe_m3u_detailed(sd_root)
+    sqlite_files, sqlite_tracks = _probe_sqlite_detailed(sd_root)
+    text_files, text_tracks = _probe_textlist_detailed(sd_root)
+    report.m3u_files = m3u_files
+    report.sqlite_files = sqlite_files
+    report.text_files = text_files
 
-    # Dedupe while preserving order.
     seen: set[Path] = set()
-    out: list[Path] = []
-    for p in found:
-        if p not in seen and p.exists():
+    for src in (m3u_tracks, sqlite_tracks, text_tracks):
+        for p in src:
+            if p in seen:
+                continue
             seen.add(p)
-            out.append(p)
-    return out
+            report.tracks.append(p)
+            if not p.exists():
+                report.tracks_missing.append(p)
+    return report
 
 
 def _candidate_dirs(sd_root: Path) -> list[Path]:
@@ -105,13 +152,22 @@ def _candidate_dirs(sd_root: Path) -> list[Path]:
 
 
 def _probe_m3u(sd_root: Path) -> list[Path]:
-    out: list[Path] = []
+    return _probe_m3u_detailed(sd_root)[1]
+
+
+def _probe_m3u_detailed(sd_root: Path) -> tuple[list[Path], list[Path]]:
+    """Return (files_found, parsed_track_paths). files_found includes
+    even empty M3Us so the caller can distinguish "no file" from "file
+    present but empty"."""
+    files: list[Path] = []
+    tracks: list[Path] = []
     for d in _candidate_dirs(sd_root):
         for ext in ("m3u", "m3u8"):
             for pl in d.glob(f"*.{ext}"):
                 if "favorite" in pl.stem.lower() or "starred" in pl.stem.lower():
-                    out.extend(_parse_m3u(pl, sd_root))
-    return out
+                    files.append(pl)
+                    tracks.extend(_parse_m3u(pl, sd_root))
+    return files, tracks
 
 
 def _parse_m3u(path: Path, sd_root: Path) -> list[Path]:
@@ -132,15 +188,19 @@ def _parse_m3u(path: Path, sd_root: Path) -> list[Path]:
 
 
 def _probe_sqlite(sd_root: Path) -> list[Path]:
-    """Look in hidden dirs for *.db / *.sqlite with plausible favorites
-    tables. Read-only — never writes."""
-    out: list[Path] = []
+    return _probe_sqlite_detailed(sd_root)[1]
+
+
+def _probe_sqlite_detailed(sd_root: Path) -> tuple[list[Path], list[Path]]:
+    files: list[Path] = []
+    tracks: list[Path] = []
     for d in _candidate_dirs(sd_root):
         if d == sd_root:
             continue
         for db_path in list(d.glob("*.db")) + list(d.glob("*.sqlite")):
-            out.extend(_read_sqlite_favorites(db_path, sd_root))
-    return out
+            files.append(db_path)
+            tracks.extend(_read_sqlite_favorites(db_path, sd_root))
+    return files, tracks
 
 
 def _read_sqlite_favorites(db_path: Path, sd_root: Path) -> list[Path]:
@@ -184,12 +244,18 @@ def _read_sqlite_favorites(db_path: Path, sd_root: Path) -> list[Path]:
 
 
 def _probe_textlist(sd_root: Path) -> list[Path]:
-    out: list[Path] = []
+    return _probe_textlist_detailed(sd_root)[1]
+
+
+def _probe_textlist_detailed(sd_root: Path) -> tuple[list[Path], list[Path]]:
+    files: list[Path] = []
+    tracks: list[Path] = []
     for d in _candidate_dirs(sd_root):
         for name in ("favorites.txt", "starred.txt"):
             f = d / name
             if not f.is_file():
                 continue
+            files.append(f)
             try:
                 for line in f.read_text(encoding="utf-8", errors="replace").splitlines():
                     line = line.strip()
@@ -198,7 +264,7 @@ def _probe_textlist(sd_root: Path) -> list[Path]:
                     track = Path(line)
                     if not track.is_absolute():
                         track = (sd_root / track).resolve()
-                    out.append(track)
+                    tracks.append(track)
             except OSError:
                 continue
-    return out
+    return files, tracks
