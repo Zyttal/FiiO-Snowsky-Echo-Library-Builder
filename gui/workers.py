@@ -4,6 +4,10 @@ We deliberately run jobs in a ProcessPoolExecutor (same as the CLI) rather
 than QThreadPool — ffmpeg and mutagen are CPU-bound, and the worker function
 is already pickle-clean dicts. A single QRunnable supervises the pool from a
 background Qt thread and emits per-file signals back to the UI.
+
+The DownloadRunner at the bottom is the opposite shape: yt-dlp + MB are
+I/O bound, the MB rate limit makes parallelism pointless, and the work is
+inherently sequential. Same QRunnable interface, single-threaded body.
 """
 from __future__ import annotations
 
@@ -81,4 +85,73 @@ class BuildRunner(QRunnable):
                     ok += 1
                 else:
                     err += 1
+        self.signals.finished.emit(ok, err)
+
+
+class DownloadSignals(QObject):
+    """Qt signals emitted from the download supervisor."""
+    started = Signal(int)                 # total songs
+    song_started = Signal(dict)           # {line_no, artist, title}
+    song_done = Signal(dict)              # DownloadResult-as-dict
+    finished = Signal(int, int)           # ok_count, error_count
+    cancelled = Signal()
+
+
+class DownloadRunner(QRunnable):
+    """Run a song list sequentially through src.downloader.download_song.
+
+    Sequential because (a) MusicBrainz's 1-req/sec rate limit serializes
+    every batch anyway and (b) yt-dlp's network throughput already
+    saturates the link for one song. No pool needed."""
+
+    def __init__(self, requests: list, dest_root: Path, cfg_dict: dict) -> None:
+        super().__init__()
+        self.requests = requests
+        self.dest_root = dest_root
+        self.cfg_dict = cfg_dict
+        self.signals = DownloadSignals()
+        self._cancel = False
+
+    def cancel(self) -> None:
+        self._cancel = True
+
+    def run(self) -> None:
+        from src import config as config_mod
+        from src.downloader import download_song
+
+        cfg = config_mod.Config(**self.cfg_dict)
+        self.signals.started.emit(len(self.requests))
+        ok = err = 0
+        for req in self.requests:
+            if self._cancel:
+                self.signals.cancelled.emit()
+                return
+            self.signals.song_started.emit({
+                "line_no": req.line_no,
+                "artist": req.artist,
+                "title": req.title,
+            })
+            result = download_song(
+                artist=req.artist,
+                title=req.title,
+                album_hint=req.album,
+                source_root=self.dest_root,
+                cfg=cfg,
+                line_no=req.line_no,
+            )
+            payload = {
+                "ok": result.ok,
+                "line_no": result.line_no,
+                "artist": result.artist,
+                "title": result.title,
+                "target": str(result.target) if result.target else "",
+                "youtube_url": result.youtube_url or "",
+                "error": result.error or "",
+                "notes": result.notes or [],
+            }
+            self.signals.song_done.emit(payload)
+            if result.ok:
+                ok += 1
+            else:
+                err += 1
         self.signals.finished.emit(ok, err)

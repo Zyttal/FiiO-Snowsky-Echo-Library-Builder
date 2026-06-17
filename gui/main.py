@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 
 from gui.build_tab import BuildTab
 from gui.device_tab import DeviceTab
+from gui.download_tab import DownloadTab
 from gui.ffmpeg_probe import find_ffmpeg, install_hint
 from gui.library_tab import LibraryTab
 
@@ -39,15 +40,25 @@ class MainWindow(QMainWindow):
         self.build_tab = BuildTab(self.ffmpeg_path)
         self.library_tab = LibraryTab()
         self.device_tab = DeviceTab()
+        self.download_tab = DownloadTab()
+        tabs.addTab(self.download_tab, "Download")
         tabs.addTab(self.build_tab, "Build")
         tabs.addTab(self.library_tab, "Library")
         tabs.addTab(self.device_tab, "Device")
         self.setCentralWidget(tabs)
 
         # Cross-tab wiring: build completion refreshes the library tree;
-        # library tab favorite toggles propagate to the device tab's preview.
+        # library tab favorite toggles propagate to the device tab's preview;
+        # finished downloads hint that the next build will pick up new files.
         self.build_tab.build_finished.connect(self.library_tab.reload_if_loaded)
         self.library_tab.favorites_changed.connect(self.device_tab.note_favorites_changed)
+        self.download_tab.download_finished.connect(self._on_downloads_finished)
+
+    def _on_downloads_finished(self, dest_root: Path) -> None:
+        # Pre-fill the Build tab's source field so the user can immediately
+        # build what they just downloaded.
+        if not self.build_tab.source_edit.text():
+            self.build_tab.source_edit.setText(str(dest_root))
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
