@@ -101,10 +101,93 @@ class DsdStrategy(Strategy):
         _run(cmd)
 
 
+class PreserveStrategy(Strategy):
+    """Output matches the source's format when the Echo can play it
+    natively at the source's resolution; downconvert only when needed.
+
+    Per-source policy (Echo compatibility list: FLAC ≤24/192, DSD ≤256,
+    MP3, M4A, OGG, APE, WAV):
+
+      - lossy formats (mp3/m4a/ogg/aac/ape): copy as-is — no transcoding.
+        Upsampling lossy to FLAC just doubles the size for nothing.
+      - WAV: encode to FLAC (lossless compression, no audio change).
+      - FLAC at ≤16-bit and ≤96 kHz: copy as-is. The Echo plays it
+        natively and the EQ works (which it doesn't at 24-bit).
+      - FLAC at >16-bit OR >96 kHz: downconvert to 16-bit/44.1 kHz so the
+        Echo's EQ stays available and the file size is sane.
+      - DSD (.dsf/.dff): copy as-is up to DSD256. Bigger ones rare.
+
+    Returns the chosen output extension via `decide_ext(source)` so the
+    layout/path computation can use the right suffix per file.
+    """
+    def __init__(self):
+        # name+ext are placeholders; per-file decisions override.
+        super().__init__("preserve", "flac", "")
+
+    def decide_ext(self, source: Path) -> str:
+        ext = source.suffix.lower().lstrip(".")
+        if ext == "wav":
+            return "flac"
+        if ext in {"mp3", "m4a", "mp4", "ogg", "aac", "ape", "flac",
+                   "dsf", "dff"}:
+            return ext
+        # Unknown source — pick FLAC as the safe Echo-compatible default.
+        return "flac"
+
+    def output_root(self, base: Path, is_primary: bool) -> Path:
+        return base
+
+    def run(self, source: Path, target: Path, cfg: Config) -> None:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        ext = source.suffix.lower().lstrip(".")
+
+        if ext == "flac":
+            self._handle_flac(source, target, cfg)
+        elif ext == "wav":
+            # WAV → FLAC (compression, no audio change)
+            self._encode_flac(source, target, cfg)
+        elif ext in {"mp3", "m4a", "mp4", "ogg", "aac", "ape", "dsf", "dff"}:
+            shutil.copy2(source, target)
+        else:
+            # Unknown source — try a safe FLAC encode.
+            self._encode_flac(source, target, cfg)
+
+    def _handle_flac(self, source: Path, target: Path, cfg: Config) -> None:
+        """FLAC source: pass through if already Echo-friendly, otherwise
+        downconvert to 16-bit/44.1 kHz."""
+        from mutagen.flac import FLAC
+        try:
+            f = FLAC(source)
+            bps = f.info.bits_per_sample
+            sr = f.info.sample_rate
+        except Exception:
+            bps, sr = 16, 44100
+        if bps <= 16 and sr <= 96000:
+            shutil.copy2(source, target)
+        else:
+            self._encode_flac(source, target, cfg)
+
+    def _encode_flac(self, source: Path, target: Path, cfg: Config) -> None:
+        sample_fmt = "s16" if cfg.target_bit_depth == 16 else "s32"
+        cmd = [
+            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+            "-i", str(source),
+            "-vn", "-map", "0:a:0",
+            "-af", "aresample=resampler=soxr:precision=28",
+            "-ar", str(cfg.target_sample_rate),
+            "-sample_fmt", sample_fmt,
+            "-compression_level", str(cfg.flac_compression_level),
+            "-map_metadata", "-1",
+            str(target),
+        ]
+        _run(cmd)
+
+
 STRATEGIES: dict[str, Strategy] = {
     "flac": FlacStrategy(),
     "mp3": Mp3Strategy(),
     "dsd": DsdStrategy(),
+    "preserve": PreserveStrategy(),
 }
 
 

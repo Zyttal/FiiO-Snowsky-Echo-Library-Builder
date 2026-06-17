@@ -52,7 +52,14 @@ def _process_one(job_payload: dict) -> dict:
     try:
         strategy.run(source, target, cfg)
         picture_bytes = cover.render(cover_path, cfg)
-        if strategy.ext == "flac":
+        # In preserve mode the target extension varies per source, so
+        # dispatch the tag writer by the actual target suffix rather than
+        # by strategy.ext. write_tags returns False when the format has
+        # no tag writer (DSF, APE, raw WAV) — caller is fine with that
+        # since folder layout + filename still keep them browseable.
+        if strategy_name == "preserve":
+            tags.write_tags(target, src_tags, picture_bytes)
+        elif strategy.ext == "flac":
             tags.write_flac(target, src_tags, picture_bytes)
         elif strategy.ext == "mp3":
             tags.write_mp3(target, src_tags, picture_bytes)
@@ -88,7 +95,7 @@ def cli():
 @click.option("--format", "primary_format",
               type=click.Choice(list(STRATEGIES.keys())), default="flac",
               show_default=True, help="Primary output format.")
-@click.option("--mirror", type=click.Choice(["none", "flac", "mp3", "dsd"]),
+@click.option("--mirror", type=click.Choice(["none", "preserve", "flac", "mp3", "dsd"]),
               default="none", show_default=True,
               help="Additionally produce a mirror tree in this format.")
 @click.option("--only", default=None,
@@ -168,8 +175,12 @@ def build(source_dir, output_dir, primary_format, mirror, only, compilation_matc
             is_primary = strategy.name == primary_format
             out_root = strategy.output_root(output_dir, is_primary)
             artist_album = layout._artist_album(src_tags, cfg)
+            # In preserve mode the extension is decided per source.
+            ext = (strategy.decide_ext(item.source)
+                   if hasattr(strategy, "decide_ext")
+                   else strategy.ext)
             target = layout.target_path(
-                out_root, src_tags, cfg, strategy.ext,
+                out_root, src_tags, cfg, ext,
                 multi_disc=artist_album in multi_disc_albums,
             )
             if not force and manifest.is_current(item.source, strategy.name, target):

@@ -70,7 +70,13 @@ class BuildTab(QWidget):
 
         # Row: format + mirror + workers
         self.format_combo = QComboBox()
-        self.format_combo.addItems(["flac", "mp3", "dsd"])
+        self.format_combo.addItems(["preserve", "flac", "mp3", "dsd"])
+        self.format_combo.setToolTip(
+            "preserve: keep each source format when the Echo can play it "
+            "(MP3/M4A/OGG copy as-is, FLAC up to 16/96 copies as-is, FLAC "
+            "higher than that downconverts to 16/44.1, WAV becomes FLAC). "
+            "Otherwise pick a fixed output format."
+        )
         self.mirror_combo = QComboBox()
         self.mirror_combo.addItems(["none", "flac", "mp3", "dsd"])
         self.workers_spin = QSpinBox()
@@ -245,8 +251,11 @@ class BuildTab(QWidget):
                 is_primary = strategy.name == primary
                 out_root = strategy.output_root(output, is_primary)
                 artist_album = layout._artist_album(src_tags, cfg)
+                ext = (strategy.decide_ext(item.source)
+                       if hasattr(strategy, "decide_ext")
+                       else strategy.ext)
                 target = layout.target_path(
-                    out_root, src_tags, cfg, strategy.ext,
+                    out_root, src_tags, cfg, ext,
                     multi_disc=artist_album in multi_disc,
                 )
                 if not force and manifest.is_current(item.source, strategy.name, target):

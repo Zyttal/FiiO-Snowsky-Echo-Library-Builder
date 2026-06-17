@@ -44,6 +44,15 @@ flow, plus three new top-level features:
   the album instead of mis-iterating its disc subdirs as separate
   albums. Fixes the case where pointing the GUI's Source at a
   multi-disc playlist would produce 333 files all numbered "01".
+- **Mixed source formats + Preserve mode** — `read_source` now uses
+  `mutagen.File()` to auto-detect FLAC / MP3 / M4A / OGG / APE / WAV
+  sources instead of crashing on anything non-FLAC. New `preserve`
+  output format (CLI `--format preserve`, GUI dropdown) keeps each
+  source's format when the Echo can play it: MP3/M4A/OGG copy as-is
+  (no lossy-to-lossless wrapping), FLAC ≤16-bit/96 kHz copies as-is,
+  FLAC >16-bit or >96 kHz downconverts to 16/44.1 (Echo EQ ceiling),
+  WAV becomes FLAC. New per-format tag writers for M4A and OGG so
+  the retag step works on the copied files.
 - **YouTube downloader** — feed a song list to the Download tab (or
   `./build_library.py download --list ...`); each line is enriched via
   MusicBrainz and landed in the source tree as a tagged FLAC ready for
