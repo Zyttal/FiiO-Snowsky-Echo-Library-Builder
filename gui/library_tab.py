@@ -27,7 +27,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from gui.workers import LibraryScanRunner
+from gui.workers import LibraryScanRunner, LyricsRunner
 
 
 class LibraryTab(QWidget):
@@ -53,6 +53,7 @@ class LibraryTab(QWidget):
         self._output_dir: Path | None = None
         self._manifest = None  # src.manifest.Manifest, set on load
         self._scan: LibraryScanRunner | None = None
+        self._lyrics_runner: LyricsRunner | None = None
         self._pool = QThreadPool.globalInstance()
         self._artists: dict[str, QTreeWidgetItem] = {}
         self._albums: dict[tuple[str, str], QTreeWidgetItem] = {}
@@ -95,6 +96,16 @@ class LibraryTab(QWidget):
         )
         self.empty_btn.clicked.connect(self._empty_library)
         danger_row.addWidget(self.empty_btn)
+        self.lyrics_btn = QPushButton("Fetch lyrics")
+        self.lyrics_btn.setToolTip(
+            "For every track in the loaded library, query LRCLIB and drop "
+            "a <track>.lrc sidecar next to the audio. Free public API, no "
+            "key required. Skips tracks that already have a sidecar. "
+            "Echo and other DAPs that read .lrc files display the synced "
+            "lyrics on playback."
+        )
+        self.lyrics_btn.clicked.connect(self._fetch_lyrics)
+        danger_row.addWidget(self.lyrics_btn)
         danger_row.addStretch()
         outer.addLayout(danger_row)
 
@@ -322,6 +333,45 @@ class LibraryTab(QWidget):
     def _cancel_scan(self) -> None:
         if self._scan is not None:
             self._scan.cancel()
+
+    def _fetch_lyrics(self) -> None:
+        """Spawn LyricsRunner over the loaded library. Idempotent; skips
+        tracks that already have a sidecar."""
+        if self._output_dir is None:
+            QMessageBox.warning(self, "No library loaded",
+                                "Load a library first.")
+            return
+        if self._lyrics_runner is not None:
+            return
+        self.lyrics_btn.setEnabled(False)
+        self.status.setText("Lyrics: starting…")
+        self._lyrics_runner = LyricsRunner(self._output_dir, overwrite=False)
+        self._lyrics_runner.signals.started.connect(self._on_lyrics_started)
+        self._lyrics_runner.signals.progress.connect(self._on_lyrics_progress)
+        self._lyrics_runner.signals.finished.connect(self._on_lyrics_finished)
+        self._lyrics_runner.signals.error.connect(self._on_lyrics_error)
+        self._pool.start(self._lyrics_runner)
+
+    def _on_lyrics_started(self, total: int) -> None:
+        self.status.setText(f"Lyrics: 0/{total} tracks")
+
+    def _on_lyrics_progress(self, i: int, total: int, label: str) -> None:
+        self.status.setText(f"Lyrics: {i}/{total} — {label}")
+
+    def _on_lyrics_finished(self, fetched: int, skipped: int,
+                            misses: int, errors: int) -> None:
+        self.lyrics_btn.setEnabled(True)
+        self._lyrics_runner = None
+        msg = (f"{fetched} fetched, {skipped} already-present, "
+               f"{misses} no-match, {errors} errors")
+        self.status.setText(f"Lyrics done. {msg}.")
+        QMessageBox.information(self, "Lyrics done", msg)
+
+    def _on_lyrics_error(self, msg: str) -> None:
+        self.lyrics_btn.setEnabled(True)
+        self._lyrics_runner = None
+        QMessageBox.warning(self, "Lyrics error", msg)
+
 
     def _is_favorite(self, flac_path: Path) -> bool:
         if not self._manifest:

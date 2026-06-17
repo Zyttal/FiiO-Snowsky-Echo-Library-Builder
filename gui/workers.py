@@ -416,6 +416,112 @@ def _read_album_cover(album_dir: Path, sample_flac=None) -> bytes | None:
     return None
 
 
+class LyricsSignals(QObject):
+    """Per-track signals emitted by LyricsRunner."""
+    started = Signal(int)              # total tracks to consider
+    progress = Signal(int, int, str)   # index, total, label
+    finished = Signal(int, int, int, int)  # fetched, skipped, misses, errors
+    cancelled = Signal()
+    error = Signal(str)
+
+
+class LyricsRunner(QRunnable):
+    """Walk every manifest entry and drop a <track>.lrc sidecar fetched
+    from LRCLIB. Skips tracks that already have a sidecar unless
+    `overwrite=True`. Sequential to stay within LRCLIB's friendly-usage
+    expectations (no documented hard rate limit, but no need to hammer)."""
+
+    def __init__(self, library_root: Path, overwrite: bool = False) -> None:
+        super().__init__()
+        self.library_root = library_root
+        self.overwrite = overwrite
+        self.signals = LyricsSignals()
+        self._cancel = False
+
+    def cancel(self) -> None:
+        self._cancel = True
+
+    def run(self) -> None:
+        from src.manifest import MANIFEST_NAME, Manifest
+        from src import lyrics as lyrics_mod
+        import mutagen
+
+        try:
+            manifest = Manifest(self.library_root / MANIFEST_NAME)
+            entries = manifest.all_entries()
+            targets = [Path(e.target) for e in entries if Path(e.target).exists()]
+            self.signals.started.emit(len(targets))
+            fetched = skipped = misses = errors = 0
+            for i, target in enumerate(targets):
+                if self._cancel:
+                    self.signals.cancelled.emit()
+                    return
+                lrc_path = target.with_suffix(".lrc")
+                if lrc_path.exists() and not self.overwrite:
+                    skipped += 1
+                    self.signals.progress.emit(i + 1, len(targets), target.name)
+                    continue
+                try:
+                    f = mutagen.File(target)
+                    artist = _read_first_tag(f, "ARTIST", "artist", "TPE1", "\xa9ART")
+                    title = _read_first_tag(f, "TITLE", "title", "TIT2", "\xa9nam")
+                    album = _read_first_tag(f, "ALBUM", "album", "TALB", "\xa9alb")
+                    duration = int(f.info.length) if f and f.info else None
+                except Exception:  # noqa: BLE001
+                    errors += 1
+                    continue
+                if not artist or not title:
+                    errors += 1
+                    continue
+                # Same compilation unmix as the CLI's lyrics subcommand.
+                if artist.lower() == "various artists" and " - " in title:
+                    real_artist, _, real_title = title.partition(" - ")
+                    artist = real_artist.strip()
+                    title = real_title.strip()
+                self.signals.progress.emit(i + 1, len(targets),
+                                           f"{artist} - {title}")
+                try:
+                    lrc = lyrics_mod.fetch_lrc(
+                        artist=artist, title=title, album=album,
+                        duration_s=duration,
+                    )
+                except Exception:  # noqa: BLE001
+                    errors += 1
+                    continue
+                if not lrc:
+                    misses += 1
+                    continue
+                lrc_path.write_text(lrc, encoding="utf-8")
+                fetched += 1
+            self.signals.finished.emit(fetched, skipped, misses, errors)
+        except Exception as e:  # noqa: BLE001
+            self.signals.error.emit(f"{type(e).__name__}: {e}")
+
+
+def _read_first_tag(audio, *keys) -> str | None:
+    """Best-effort first-value tag read across Vorbis / ID3 / MP4 schemes.
+    Duplicated tiny helper rather than shared with build_library to keep
+    the Qt thread free of the click-decorated CLI module."""
+    if audio is None or audio.tags is None:
+        return None
+    for k in keys:
+        try:
+            v = audio.tags.get(k)
+        except Exception:  # noqa: BLE001
+            continue
+        if v is None:
+            continue
+        if hasattr(v, "text") and v.text:
+            return str(v.text[0]).strip() or None
+        if isinstance(v, (list, tuple)) and v:
+            x = v[0]
+            if isinstance(x, (list, tuple)) and x:
+                x = x[0]
+            return str(x).strip() or None
+        return str(v).strip() or None
+    return None
+
+
 class DownloadSignals(QObject):
     """Qt signals emitted from the download supervisor."""
     started = Signal(int)                 # total songs

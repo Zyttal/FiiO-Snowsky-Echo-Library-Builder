@@ -467,6 +467,108 @@ def verify(output_dir):
 
 
 @cli.command()
+@click.option("--output", "output_dir", type=click.Path(exists=True, file_okay=False,
+              path_type=Path), required=True,
+              help="Library root to fetch lyrics for.")
+@click.option("--only", default=None,
+              help="Process only album folders whose name contains this substring.")
+@click.option("--overwrite", is_flag=True,
+              help="Re-fetch even for tracks that already have a .lrc sidecar.")
+def lyrics(output_dir, only, overwrite):
+    """Fetch synced lyrics from LRCLIB for every track in the library and
+    drop them as <track>.lrc sidecars next to the audio. Skips tracks
+    that already have a sidecar unless --overwrite is set."""
+    from src import lyrics as lyrics_mod
+    import mutagen
+
+    output_dir = output_dir.resolve()
+    manifest = Manifest(output_dir / MANIFEST_NAME)
+    entries = manifest.all_entries()
+    if not entries:
+        click.echo("No manifest entries — run `build` or `reconcile` first.")
+        return
+
+    targets: list[Path] = []
+    for e in entries:
+        target = Path(e.target)
+        if not target.exists():
+            continue
+        if only and only.lower() not in target.parent.name.lower():
+            continue
+        targets.append(target)
+
+    if not targets:
+        click.echo("No tracks matched.")
+        return
+
+    fetched = skipped = misses = errors = 0
+    for target in tqdm(targets, unit="track"):
+        lrc_path = target.with_suffix(".lrc")
+        if lrc_path.exists() and not overwrite:
+            skipped += 1
+            continue
+        try:
+            f = mutagen.File(target)
+            artist = _first_tag(f, "ARTIST", "artist", "TPE1", "\xa9ART")
+            title = _first_tag(f, "TITLE", "title", "TIT2", "\xa9nam")
+            album = _first_tag(f, "ALBUM", "album", "TALB", "\xa9alb")
+            duration = int(f.info.length) if f and f.info else None
+        except Exception:  # noqa: BLE001
+            errors += 1
+            continue
+        if not artist or not title:
+            errors += 1
+            continue
+        # Compilation-mode tracks carry `Artist - Title` in TITLE and
+        # `Various Artists` as ARTIST. Unmix so LRCLIB sees the real
+        # artist; the original tag stays untouched.
+        if artist.lower() == "various artists" and " - " in title:
+            real_artist, _, real_title = title.partition(" - ")
+            artist = real_artist.strip()
+            title = real_title.strip()
+        try:
+            lrc = lyrics_mod.fetch_lrc(
+                artist=artist, title=title, album=album,
+                duration_s=duration,
+            )
+        except Exception:  # noqa: BLE001
+            errors += 1
+            continue
+        if not lrc:
+            misses += 1
+            continue
+        lrc_path.write_text(lrc, encoding="utf-8")
+        fetched += 1
+
+    click.echo(
+        f"Done: {fetched} fetched, {skipped} already-present, "
+        f"{misses} no-match, {errors} errors."
+    )
+
+
+def _first_tag(audio, *keys) -> str | None:
+    """Best-effort first-value tag read across Vorbis/ID3/MP4 schemes."""
+    if audio is None or audio.tags is None:
+        return None
+    for k in keys:
+        try:
+            v = audio.tags.get(k)
+        except Exception:  # noqa: BLE001
+            continue
+        if v is None:
+            continue
+        if hasattr(v, "text") and v.text:
+            return str(v.text[0]).strip() or None
+        if isinstance(v, (list, tuple)) and v:
+            x = v[0]
+            if isinstance(x, (list, tuple)) and x:
+                x = x[0]
+            return str(x).strip() or None
+        return str(v).strip() or None
+    return None
+
+
+@cli.command()
 @click.option("--list", "list_path",
               type=click.Path(exists=True, dir_okay=False, path_type=Path),
               required=True,

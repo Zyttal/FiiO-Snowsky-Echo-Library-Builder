@@ -44,7 +44,7 @@ from pathlib import Path
 
 import yt_dlp
 
-from . import musicbrainz, sanitize, tags
+from . import lyrics, musicbrainz, sanitize, tags
 from .config import Config
 
 # Duration tolerance for the YouTube match scorer. When MB returned a
@@ -155,6 +155,23 @@ def download_song(
                 if not cover_path.exists():
                     cover_path.write_bytes(cover_bytes)
                     notes.append("cover.jpg written")
+
+            if cfg.fetch_lyrics:
+                duration_s = (meta.duration_ms / 1000) if meta.duration_ms else None
+                try:
+                    lrc = lyrics.fetch_lrc(
+                        artist=meta.artist,
+                        title=meta.title,
+                        album=meta.album or None,
+                        duration_s=int(duration_s) if duration_s else None,
+                    )
+                except Exception:  # noqa: BLE001
+                    lrc = None
+                if lrc:
+                    target.with_suffix(".lrc").write_text(lrc, encoding="utf-8")
+                    notes.append("lyrics: lrc written")
+                else:
+                    notes.append("lyrics: no LRCLIB match")
 
         return DownloadResult(
             ok=True, artist=artist, title=title, line_no=line_no,

@@ -38,6 +38,11 @@ class Config:
     # entirely local; turn on for compilations or rips whose folder-level
     # cover.jpg is missing/tiny.
     enrich_covers_via_caa: bool = False
+    # Drop a `<track>.lrc` lyrics sidecar next to each downloaded track,
+    # fetched from LRCLIB (free, no API key). The DAP reads the sidecar
+    # at playback. On by default — turn off to skip the extra HTTP call
+    # if you don't want lyrics on disk.
+    fetch_lyrics: bool = True
 
     def resolved_workers(self) -> int:
         if self.workers is not None:
