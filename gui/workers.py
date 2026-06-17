@@ -318,6 +318,10 @@ class LibraryScanRunner(QRunnable):
             # path string for files that don't follow the convention.
             paths = sorted(self.root.rglob("*.flac"), key=_track_sort_key)
             self.signals.started.emit(len(paths))
+            # Per-album cover bytes cache so a 30-track album reads its
+            # cover.jpg once. Two-level: first a hit/miss flag, then the
+            # bytes; storing None for known-missing avoids re-stat'ing.
+            cover_cache: dict[Path, bytes | None] = {}
             count = 0
             for p in paths:
                 if self._cancel:
@@ -330,6 +334,7 @@ class LibraryScanRunner(QRunnable):
                 artist, album = parts[0], parts[1]
 
                 genre = year = bitrate = fmt = duration = ""
+                flac = None
                 try:
                     flac = FLAC(p)
                     if flac.tags:
@@ -358,6 +363,13 @@ class LibraryScanRunner(QRunnable):
                 except Exception:
                     pass
 
+                album_dir = p.parent
+                if album_dir in cover_cache:
+                    cover_bytes = cover_cache[album_dir]
+                else:
+                    cover_bytes = _read_album_cover(album_dir, flac)
+                    cover_cache[album_dir] = cover_bytes
+
                 target_str = str(p)
                 fav, playlists = self.manifest_lookup.get(
                     target_str, (False, []))
@@ -373,11 +385,35 @@ class LibraryScanRunner(QRunnable):
                     "duration": duration,
                     "favorite": fav,
                     "playlists": list(playlists),
+                    "cover_bytes": cover_bytes,
                 })
                 count += 1
             self.signals.finished.emit(count)
         except Exception as e:  # noqa: BLE001
             self.signals.error.emit(f"{type(e).__name__}: {e}")
+
+
+def _read_album_cover(album_dir: Path, sample_flac=None) -> bytes | None:
+    """Return raw image bytes for an album cover, or None when nothing
+    suitable is available. Prefers <album_dir>/cover.{jpg,jpeg,png};
+    falls back to the first embedded picture in `sample_flac` (a mutagen
+    FLAC instance) when no folder image exists. Used by the Library tab's
+    per-row thumbnail."""
+    for candidate in ("cover.jpg", "cover.jpeg", "cover.png", "folder.jpg"):
+        p = album_dir / candidate
+        if p.is_file():
+            try:
+                return p.read_bytes()
+            except OSError:
+                pass
+    if sample_flac is not None:
+        try:
+            pics = list(sample_flac.pictures)
+        except Exception:  # noqa: BLE001
+            pics = []
+        if pics:
+            return pics[0].data
+    return None
 
 
 class DownloadSignals(QObject):

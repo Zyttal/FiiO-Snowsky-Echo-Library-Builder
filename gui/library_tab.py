@@ -7,8 +7,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QThreadPool, Signal
-from PySide6.QtGui import QAction
+from PySide6.QtCore import QSize, Qt, QThreadPool, Signal
+from PySide6.QtGui import QAction, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QFileDialog,
@@ -35,14 +35,18 @@ class LibraryTab(QWidget):
     playlists_changed = Signal()
 
     COL_NAME = 0
-    COL_FAV = 1
-    COL_GENRE = 2
-    COL_YEAR = 3
-    COL_FORMAT = 4
-    COL_BITRATE = 5
-    COL_DURATION = 6
-    COL_PLAYLISTS = 7
-    COLUMN_COUNT = 8
+    COL_ALBUM = 1
+    COL_FAV = 2
+    COL_GENRE = 3
+    COL_YEAR = 4
+    COL_FORMAT = 5
+    COL_BITRATE = 6
+    COL_DURATION = 7
+    COL_PLAYLISTS = 8
+    COLUMN_COUNT = 9
+    # Thumbnail target side-length on the leftmost cell. Qt scales the
+    # cached pixmap down to this when rendering the row.
+    THUMB_PX = 36
 
     def __init__(self) -> None:
         super().__init__()
@@ -103,15 +107,20 @@ class LibraryTab(QWidget):
         self.tree = QTreeWidget()
         self.tree.setColumnCount(self.COLUMN_COUNT)
         self.tree.setHeaderLabels([
-            "Artist / Album / Track", "Favorite", "Genre", "Year",
+            "Artist / Album / Track", "Album", "Favorite", "Genre", "Year",
             "Format", "Bitrate", "Duration", "Playlists",
         ])
         self.tree.header().setSectionResizeMode(self.COL_NAME, QHeaderView.ResizeMode.Stretch)
+        self.tree.header().setSectionResizeMode(self.COL_ALBUM, QHeaderView.ResizeMode.ResizeToContents)
         for col in (self.COL_FAV, self.COL_GENRE, self.COL_YEAR,
                     self.COL_FORMAT, self.COL_BITRATE, self.COL_DURATION,
                     self.COL_PLAYLISTS):
             self.tree.header().setSectionResizeMode(
                 col, QHeaderView.ResizeMode.ResizeToContents)
+        self.tree.setIconSize(QSize(self.THUMB_PX, self.THUMB_PX))
+        # In-memory per-album thumbnail cache so a 30-track album decodes
+        # its cover once, not 30 times. Keyed by album folder path.
+        self._album_thumbs: dict[str, "QIcon"] = {}
         self.tree.itemChanged.connect(self._on_item_changed)
         self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.tree.customContextMenuRequested.connect(self._on_context_menu)
@@ -214,6 +223,7 @@ class LibraryTab(QWidget):
         artist = payload["artist"]
         album = payload["album"]
         track_path = Path(payload["path"])
+        album_dir = str(track_path.parent)
 
         artist_item = self._artists.get(artist)
         if artist_item is None:
@@ -228,15 +238,20 @@ class LibraryTab(QWidget):
         album_key = (artist, album)
         album_item = self._albums.get(album_key)
         if album_item is None:
-            album_item = QTreeWidgetItem([album] + [""] * (self.COLUMN_COUNT - 1))
+            row = [album] + [""] * (self.COLUMN_COUNT - 1)
+            row[self.COL_ALBUM] = album
+            album_item = QTreeWidgetItem(row)
             artist_item.addChild(album_item)
             self._albums[album_key] = album_item
-            album_item.setData(0, Qt.ItemDataRole.UserRole + 1,
-                               str(track_path.parent))
+            album_item.setData(0, Qt.ItemDataRole.UserRole + 1, album_dir)
+            icon = self._album_icon(album_dir, payload.get("cover_bytes"))
+            if icon is not None:
+                album_item.setIcon(self.COL_NAME, icon)
 
         playlists_str = ", ".join(payload["playlists"])
-        track_item = QTreeWidgetItem([
+        row = [
             payload["filename"],
+            album,
             "",
             payload["genre"],
             payload.get("year", ""),
@@ -244,15 +259,39 @@ class LibraryTab(QWidget):
             payload["bitrate"],
             payload.get("duration", ""),
             playlists_str,
-        ])
+        ]
+        track_item = QTreeWidgetItem(row)
         track_item.setCheckState(
             self.COL_FAV,
             Qt.CheckState.Checked if payload["favorite"]
             else Qt.CheckState.Unchecked,
         )
         track_item.setData(0, Qt.ItemDataRole.UserRole, payload["path"])
+        icon = self._album_icon(album_dir, payload.get("cover_bytes"))
+        if icon is not None:
+            track_item.setIcon(self.COL_NAME, icon)
         album_item.addChild(track_item)
         self.progress.setValue(self.progress.value() + 1)
+
+    def _album_icon(self, album_dir: str, cover_bytes: bytes | None) -> QIcon | None:
+        """Return a cached QIcon for the album's cover, or None when no
+        cover is available. Decoded once per album folder."""
+        cached = self._album_thumbs.get(album_dir)
+        if cached is not None:
+            return cached
+        if not cover_bytes:
+            return None
+        pm = QPixmap()
+        if not pm.loadFromData(cover_bytes):
+            return None
+        scaled = pm.scaled(
+            self.THUMB_PX, self.THUMB_PX,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        icon = QIcon(scaled)
+        self._album_thumbs[album_dir] = icon
+        return icon
 
     def _on_scan_finished(self, count: int) -> None:
         self.tree.blockSignals(False)
