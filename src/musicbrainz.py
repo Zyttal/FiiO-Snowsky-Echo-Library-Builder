@@ -111,7 +111,10 @@ def enrich(artist: str, title: str, album_hint: str | None = None) -> Enriched |
             chosen["id"],
             # 'release-groups' is invalid on the recording endpoint; the
             # release-list returned via 'releases' already nests release-
-            # group info inline.
+            # group info inline. We'd also like 'genres' (curated genre
+            # tags) but this musicbrainzngs version doesn't expose it,
+            # so we filter the community 'tags' list in _pick_genre to
+            # drop the obvious chart-position noise ("1-4 Wochen", etc.).
             includes=["releases", "tags", "artist-credits"],
         )["recording"]
     except musicbrainzngs.WebServiceError:
@@ -262,18 +265,55 @@ def _artist_credit_phrase(credits: list) -> str | None:
 
 
 def _pick_genre(recording: dict, release: dict) -> str | None:
-    """Recording → release-group → release tags. Title-case the result so
-    'progressive rock' becomes 'Progressive Rock' (matches DAP display)."""
+    """Walk the recording's, release-group's, and release's community
+    `tag-list` in that priority order, taking the highest-voted tag
+    that *looks* like a genre. Title-cases the result so
+    'progressive rock' becomes 'Progressive Rock' (matches DAP display).
+
+    The look-like-a-genre filter drops tags with digits (chart positions
+    like "1-4 Wochen", "top 10", "2000s") and over-long descriptive notes,
+    which is most of what makes MB user tags noisy. We'd prefer the
+    curated `genre-list` but musicbrainzngs in this venv doesn't expose
+    it.
+    """
     for source in (recording,
                    release.get("release-group") or {},
                    release):
         tags = source.get("tag-list") or []
-        if tags:
-            tags_sorted = sorted(tags, key=lambda t: -int(t.get("count", 0)))
-            top = tags_sorted[0].get("name")
-            if top:
-                return top.strip().title()
+        if not tags:
+            continue
+        for t in sorted(tags, key=lambda t: -int(t.get("count", 0))):
+            name = (t.get("name") or "").strip()
+            if name and _looks_like_a_genre(name):
+                return name.title()
     return None
+
+
+def _looks_like_a_genre(name: str) -> bool:
+    """Heuristic — reject obvious non-genre MB tags.
+
+    Filters out, in priority:
+    - Digits → chart positions ('1-4 Wochen'), year markers ('2000s'),
+      playlist counts.
+    - >40 chars → descriptive notes.
+    - 4+ words → almost always album titles or descriptive phrases
+      ('Wild Eyed And Live'). Real genres top out around 3 words
+      ('Progressive Death Metal').
+    - Ends in '!' or '?' → not a genre name format.
+    """
+    if not name:
+        return False
+    if any(ch.isdigit() for ch in name):
+        return False
+    if len(name) > 40:
+        return False
+    if name.endswith(("!", "?")):
+        return False
+    # Word count — hyphenated single-token compounds count as one word.
+    word_count = len(name.split())
+    if word_count >= 4:
+        return False
+    return True
 
 
 def _to_int(val) -> int | None:

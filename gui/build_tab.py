@@ -328,23 +328,40 @@ class BuildTab(QWidget):
         self._set_running(True)
         self._pending_state = state
 
+        # Remember which display row corresponds to which job index, so
+        # both `enriched` and `no_match` signals can flip the row's status
+        # cell without depending on a label-string match (which fails for
+        # tracks whose artist/title contain special characters).
+        self._enrich_row_for_idx: dict[int, int] = {}
+
         self._enrich_runner = TagEnrichmentRunner(to_enrich)
         self._enrich_runner.signals.progress.connect(self._on_enrich_progress)
         self._enrich_runner.signals.enriched.connect(self._on_enrich_enriched)
+        self._enrich_runner.signals.no_match.connect(self._on_enrich_no_match)
         self._enrich_runner.signals.finished.connect(self._on_enrich_finished)
         self._enrich_runner.signals.cancelled.connect(self._on_enrich_cancelled)
+        # Remember (idx → job_idx) so progress events know which job is
+        # being processed without relying on string matching.
+        self._enrich_jobidx_by_i = [job_idx for job_idx, _ in to_enrich]
         self.pool.start(self._enrich_runner)
 
     def _on_enrich_progress(self, i: int, label: str) -> None:
         self.progress.setValue(i + 1)
         # Reuse the table for live MB feedback so the user can see what's
         # happening; we'll wipe and repopulate for the build phase.
+        target_key = f"enrich-{i}"
         self._add_or_update_row(
-            target=f"enrich-{i}",
+            target=target_key,
             file_label=label,
             status="looking up",
             note="",
         )
+        # Remember which display row this MB call corresponds to so the
+        # enriched / no_match callback can flip the cell deterministically.
+        job_idx = self._enrich_jobidx_by_i[i] if i < len(
+            self._enrich_jobidx_by_i) else -1
+        if job_idx >= 0:
+            self._enrich_row_for_idx[job_idx] = self._row_for_target[target_key]
 
     def _on_enrich_enriched(self, idx: int, updated_tags: dict) -> None:
         # Mutate the SourceTags in place so the upcoming compilation
@@ -356,20 +373,20 @@ class BuildTab(QWidget):
             t.date = updated_tags["date"]
         if updated_tags.get("album_artist"):
             t.album_artist = updated_tags["album_artist"]
-        # Reflect the genre that just landed in the currently displayed
-        # row for this artist/title (best-effort match by label).
-        artist = updated_tags.get("artist", "")
-        title = updated_tags.get("title", "")
-        target_label = f"{artist} - {title}"
-        for row in range(self.table.rowCount()):
-            item = self.table.item(row, 0)
-            if item and item.text() == target_label:
-                self.table.setItem(row, 1, _status_item("enriched"))
-                genre = updated_tags.get("genre", "")
-                self.table.setItem(row, 2, QTableWidgetItem(
-                    f"genre={genre}" if genre else ""
-                ))
-                break
+
+        row = self._enrich_row_for_idx.get(idx)
+        if row is not None:
+            self.table.setItem(row, 1, _status_item("enriched"))
+            genre = updated_tags.get("genre", "")
+            self.table.setItem(row, 2, QTableWidgetItem(
+                f"genre={genre}" if genre else "(no genre returned)"
+            ))
+
+    def _on_enrich_no_match(self, idx: int) -> None:
+        row = self._enrich_row_for_idx.get(idx)
+        if row is not None:
+            self.table.setItem(row, 1, _status_item("no match"))
+            self.table.setItem(row, 2, QTableWidgetItem("MusicBrainz had nothing"))
 
     def _on_enrich_finished(self, n: int) -> None:
         # Phase 3: now that the SourceTags are enriched, apply the

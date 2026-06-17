@@ -138,7 +138,8 @@ class EnrichmentSignals(QObject):
     """Per-item signals emitted by TagEnrichmentRunner."""
     started = Signal(int)             # total items to look up
     progress = Signal(int, str)       # index, "Artist - Title" label
-    enriched = Signal(int, dict)      # index, updated tags dict
+    enriched = Signal(int, dict)      # index, updated tags dict (only when fields actually changed)
+    no_match = Signal(int)            # index, MB returned nothing usable
     finished = Signal(int)            # number actually enriched
     cancelled = Signal()
 
@@ -216,6 +217,10 @@ class TagEnrichmentRunner(QRunnable):
             if updated != src_tags:
                 self.signals.enriched.emit(job_idx, updated)
                 actually_enriched += 1
+            else:
+                # MB matched nothing useful — let the UI mark this row as
+                # "no match" instead of leaving it stuck on "looking up".
+                self.signals.no_match.emit(job_idx)
 
         self.signals.finished.emit(actually_enriched)
 
