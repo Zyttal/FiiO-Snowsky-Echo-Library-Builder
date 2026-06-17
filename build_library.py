@@ -327,6 +327,92 @@ def verify(output_dir):
             click.echo(f"  ... and {len(issues) - 30} more")
 
 
+@cli.command()
+@click.option("--list", "list_path",
+              type=click.Path(exists=True, dir_okay=False, path_type=Path),
+              required=True,
+              help="Text file with one song per line: 'Artist - Title' or "
+                   "'Artist - Album - Title' (Album form recommended for "
+                   "accurate MusicBrainz matches).")
+@click.option("--dest", "dest_root",
+              type=click.Path(file_okay=False, path_type=Path),
+              required=True,
+              help="Source library root. Each download lands as a FLAC "
+                   "under <dest>/<Album> - <Artist>/, ready for `build`.")
+@click.option("--config", "config_path", type=click.Path(path_type=Path),
+              default=None, help="Path to config.yaml (defaults to ./config.yaml).")
+@click.option("--skip-existing/--overwrite", default=True, show_default=True,
+              help="Skip songs whose target file already exists.")
+def download(list_path, dest_root, config_path, skip_existing):
+    """Download a list of songs from YouTube, enrich tags via MusicBrainz,
+    and drop them into the source library so `build` can pick them up."""
+    if not dest_root.exists():
+        dest_root.mkdir(parents=True, exist_ok=True)
+    dest_root = dest_root.resolve()
+
+    cfg_path = config_path or Path(__file__).parent / "config.yaml"
+    cfg = config_mod.load(cfg_path)
+
+    from src.downloader import download_song
+    from src.song_list import parse as parse_song_list
+
+    try:
+        requests = parse_song_list(list_path)
+    except ValueError as e:
+        click.echo(str(e), err=True)
+        sys.exit(2)
+
+    if not requests:
+        click.echo("Empty song list — nothing to do.", err=True)
+        return
+
+    click.echo(f"Downloading {len(requests)} songs to {dest_root}")
+
+    ok = err = skipped = 0
+    for req in requests:
+        prefix = f"  [{req.line_no:03d}] {req.artist} - {req.title}"
+        if skip_existing and _already_present(dest_root, req, cfg):
+            click.echo(f"{prefix}   SKIP (exists)")
+            skipped += 1
+            continue
+        click.echo(f"{prefix} ...")
+        result = download_song(
+            artist=req.artist, title=req.title, album_hint=req.album,
+            source_root=dest_root, cfg=cfg, line_no=req.line_no,
+        )
+        if result.ok:
+            ok += 1
+            target_rel = result.target.relative_to(dest_root) if result.target else "?"
+            click.echo(f"        -> {target_rel}")
+            for n in (result.notes or []):
+                click.echo(f"           ({n})")
+        else:
+            err += 1
+            click.echo(f"        FAIL: {result.error}", err=True)
+            for n in (result.notes or []):
+                click.echo(f"              ({n})", err=True)
+
+    click.echo(f"Done. {ok} downloaded, {skipped} skipped, {err} failed.")
+    if err:
+        sys.exit(1)
+
+
+def _already_present(dest_root, request, cfg) -> bool:
+    """Best-effort check: scan <dest_root>/<* - request.artist>/ for any
+    filename containing the title."""
+    needle = request.title.lower()
+    artist = request.artist.lower()
+    for album_dir in dest_root.iterdir():
+        if not album_dir.is_dir():
+            continue
+        if artist not in album_dir.name.lower():
+            continue
+        for f in album_dir.iterdir():
+            if f.suffix.lower() == ".flac" and needle in f.stem.lower():
+                return True
+    return False
+
+
 @cli.group()
 def favorites():
     """Read favorites off the device or push manifest favorites to the SD card."""
