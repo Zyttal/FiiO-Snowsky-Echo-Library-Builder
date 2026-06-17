@@ -345,6 +345,11 @@ class LibraryTab(QWidget):
             return
         self.lyrics_btn.setEnabled(False)
         self.status.setText("Lyrics: starting…")
+        # Reuse the scan progress bar — busy indicator (range 0..0) until
+        # the runner's `started` signal hands us the real total.
+        self.progress.setRange(0, 0)
+        self.progress.setValue(0)
+        self.progress.setVisible(True)
         self._lyrics_runner = LyricsRunner(self._output_dir, overwrite=False)
         self._lyrics_runner.signals.started.connect(self._on_lyrics_started)
         self._lyrics_runner.signals.progress.connect(self._on_lyrics_progress)
@@ -353,14 +358,18 @@ class LibraryTab(QWidget):
         self._pool.start(self._lyrics_runner)
 
     def _on_lyrics_started(self, total: int) -> None:
+        self.progress.setRange(0, max(total, 1))
+        self.progress.setValue(0)
         self.status.setText(f"Lyrics: 0/{total} tracks")
 
     def _on_lyrics_progress(self, i: int, total: int, label: str) -> None:
+        self.progress.setValue(i)
         self.status.setText(f"Lyrics: {i}/{total} — {label}")
 
     def _on_lyrics_finished(self, fetched: int, skipped: int,
                             misses: int, errors: int) -> None:
         self.lyrics_btn.setEnabled(True)
+        self.progress.setVisible(False)
         self._lyrics_runner = None
         msg = (f"{fetched} fetched, {skipped} already-present, "
                f"{misses} no-match, {errors} errors")
@@ -369,6 +378,7 @@ class LibraryTab(QWidget):
 
     def _on_lyrics_error(self, msg: str) -> None:
         self.lyrics_btn.setEnabled(True)
+        self.progress.setVisible(False)
         self._lyrics_runner = None
         QMessageBox.warning(self, "Lyrics error", msg)
 
