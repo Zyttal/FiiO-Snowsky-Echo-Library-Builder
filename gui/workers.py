@@ -416,6 +416,100 @@ def _read_album_cover(album_dir: Path, sample_flac=None) -> bytes | None:
     return None
 
 
+class AlbumPushSignals(QObject):
+    """Per-album signals emitted by AlbumPushRunner."""
+    started = Signal(int)                            # total albums queued
+    album_started = Signal(str, str, int)            # artist, album, track count
+    track_progress = Signal(str, str, int, int, str, str)
+    # ^ artist, album, index, total, status, filename
+    album_done = Signal(dict)
+    # ^ {artist, album, copied, up_to_date, pruned, cover_written, lrc_failed}
+    finished = Signal(int)                           # total albums pushed
+    cancelled = Signal()
+    error = Signal(str)
+
+
+class AlbumPushRunner(QRunnable):
+    """Push one or more album folders to the SD card on a background
+    thread. Each album's copy step is sequential (SD I/O dominates).
+
+    `albums` is a list of (album_dir, artist_name, album_name) triples;
+    the artist/album strings come from the Library tab's tree rows so
+    sanitization matches what the user sees."""
+
+    def __init__(
+        self,
+        albums: list[tuple[Path, str, str]],
+        sd_root: Path,
+        cfg_dict: dict,
+    ) -> None:
+        super().__init__()
+        self.albums = albums
+        self.sd_root = sd_root
+        self.cfg_dict = cfg_dict
+        self.signals = AlbumPushSignals()
+        self._cancel = False
+
+    def cancel(self) -> None:
+        self._cancel = True
+
+    def run(self) -> None:
+        from src import config as config_mod
+        from src.album import push_album
+
+        try:
+            cfg = config_mod.Config(**self.cfg_dict)
+            self.signals.started.emit(len(self.albums))
+            pushed = 0
+            for album_dir, artist_name, album_name in self.albums:
+                if self._cancel:
+                    self.signals.cancelled.emit()
+                    return
+                # Pre-count tracks for the album_started signal so the
+                # progress bar has a real range from the start.
+                track_count = sum(
+                    1 for p in album_dir.iterdir()
+                    if p.is_file()
+                    and p.suffix.lower() in {
+                        ".flac", ".m4a", ".opus", ".mp3", ".ogg", ".wav"
+                    }
+                )
+                self.signals.album_started.emit(
+                    artist_name, album_name, track_count,
+                )
+
+                def emit_progress(
+                    idx, total, status, filename,
+                    _artist=artist_name, _album=album_name,
+                ):
+                    self.signals.track_progress.emit(
+                        _artist, _album, idx, total, status, filename,
+                    )
+
+                report = push_album(
+                    album_dir, artist_name, album_name,
+                    self.sd_root, cfg, prune=True,
+                    progress_callback=emit_progress,
+                    cancel_check=lambda: self._cancel,
+                )
+                if self._cancel:
+                    self.signals.cancelled.emit()
+                    return
+                self.signals.album_done.emit({
+                    "artist": artist_name,
+                    "album": album_name,
+                    "copied": len(report.copied),
+                    "up_to_date": len(report.skipped_up_to_date),
+                    "pruned": len(report.pruned),
+                    "cover_written": report.cover_written,
+                    "lrc_failed": len(report.lrc_failed),
+                })
+                pushed += 1
+            self.signals.finished.emit(pushed)
+        except Exception as e:  # noqa: BLE001
+            self.signals.error.emit(f"{type(e).__name__}: {e}")
+
+
 class LyricsSignals(QObject):
     """Per-track signals emitted by LyricsRunner."""
     started = Signal(int)              # total tracks to consider

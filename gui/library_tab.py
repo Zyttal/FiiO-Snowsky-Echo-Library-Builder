@@ -27,7 +27,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from gui.workers import LibraryScanRunner, LyricsRunner
+from gui.workers import AlbumPushRunner, LibraryScanRunner, LyricsRunner
 
 
 class LibraryTab(QWidget):
@@ -54,6 +54,9 @@ class LibraryTab(QWidget):
         self._manifest = None  # src.manifest.Manifest, set on load
         self._scan: LibraryScanRunner | None = None
         self._lyrics_runner: LyricsRunner | None = None
+        self._album_push_runner: AlbumPushRunner | None = None
+        # SD destination remembered between album-push invocations.
+        self._last_album_sd_root: Path | None = None
         self._pool = QThreadPool.globalInstance()
         self._artists: dict[str, QTreeWidgetItem] = {}
         self._albums: dict[tuple[str, str], QTreeWidgetItem] = {}
@@ -450,6 +453,18 @@ class LibraryTab(QWidget):
 
         if folder_items:
             menu.addSeparator()
+            # Push action — collect album folders from the selection
+            # (recursing into artist rows to find their albums).
+            albums_to_push = self._collect_albums_to_push(folder_items)
+            if albums_to_push:
+                push_label = (f"Push album '{albums_to_push[0][2]}' to SD card…"
+                              if len(albums_to_push) == 1
+                              else f"Push {len(albums_to_push)} albums to SD card…")
+                push_action = QAction(push_label, self)
+                push_action.triggered.connect(
+                    lambda _, a=albums_to_push: self._push_albums(a))
+                menu.addAction(push_action)
+
             # Per-folder delete (each picks its own confirmation), since
             # different folders may be different sizes.
             for it, folder in folder_items:
@@ -466,6 +481,140 @@ class LibraryTab(QWidget):
 
         if menu.actions():
             menu.exec(self.tree.viewport().mapToGlobal(pos))
+
+    def _collect_albums_to_push(
+        self, folder_items: list[tuple[QTreeWidgetItem, str]],
+    ) -> list[tuple[Path, str, str]]:
+        """Walk the selected folder rows and return
+        (album_dir, artist_name, album_name) triples ready for
+        AlbumPushRunner. Artist rows expand to all their albums; album
+        rows pass through. Deduped while preserving tree order."""
+        seen: set[str] = set()
+        out: list[tuple[Path, str, str]] = []
+
+        def add_album(album_item: QTreeWidgetItem) -> None:
+            folder = album_item.data(0, Qt.ItemDataRole.UserRole + 1)
+            if not folder or folder in seen:
+                return
+            seen.add(folder)
+            artist_parent = album_item.parent()
+            artist_name = (artist_parent.text(self.COL_NAME)
+                           if artist_parent is not None
+                           else "Unknown Artist")
+            album_name = album_item.text(self.COL_NAME)
+            out.append((Path(folder), artist_name, album_name))
+
+        for it, _folder in folder_items:
+            parent = it.parent()
+            if parent is None:
+                # Artist row — expand to its albums.
+                for j in range(it.childCount()):
+                    child = it.child(j)
+                    # Only treat as an album row if it has no track-row
+                    # UserRole data (track rows store their path there).
+                    if not child.data(0, Qt.ItemDataRole.UserRole):
+                        add_album(child)
+            else:
+                # Album row.
+                add_album(it)
+        return out
+
+    def _push_albums(self, albums: list[tuple[Path, str, str]]) -> None:
+        """Open a destination picker (SD card root) and start
+        AlbumPushRunner. Remembers the last destination so the user
+        doesn't pick the same folder twice."""
+        if self._album_push_runner is not None:
+            QMessageBox.information(
+                self, "Push in progress",
+                "Another album push is already running.",
+            )
+            return
+        default_dir = (str(self._last_album_sd_root)
+                       if self._last_album_sd_root is not None
+                       else str(Path.home()))
+        sd_path = QFileDialog.getExistingDirectory(
+            self, "Pick SD card root (Albums/ will be created)", default_dir,
+        )
+        if not sd_path:
+            return
+        sd_root = Path(sd_path).expanduser().resolve()
+        if not sd_root.is_dir():
+            QMessageBox.warning(self, "Bad destination",
+                                f"{sd_root} is not a folder.")
+            return
+        self._last_album_sd_root = sd_root
+
+        from src import config as config_mod
+        cfg_path = Path(__file__).resolve().parent.parent / "config.yaml"
+        cfg = config_mod.load(cfg_path)
+
+        self.status.setText(f"Push: queued {len(albums)} album(s).")
+        self.progress.setRange(0, 0)
+        self.progress.setValue(0)
+        self.progress.setVisible(True)
+        self._album_push_runner = AlbumPushRunner(albums, sd_root, cfg.__dict__)
+        self._album_push_runner.signals.started.connect(self._on_album_push_started)
+        self._album_push_runner.signals.album_started.connect(
+            self._on_album_push_album_started)
+        self._album_push_runner.signals.track_progress.connect(
+            self._on_album_push_track_progress)
+        self._album_push_runner.signals.album_done.connect(
+            self._on_album_push_album_done)
+        self._album_push_runner.signals.finished.connect(
+            self._on_album_push_finished)
+        self._album_push_runner.signals.error.connect(self._on_album_push_error)
+        self._pool.start(self._album_push_runner)
+
+    def _on_album_push_started(self, total_albums: int) -> None:
+        self._album_push_total = total_albums
+        self._album_push_index = 0
+        self.status.setText(f"Push: 0/{total_albums} albums")
+
+    def _on_album_push_album_started(
+        self, artist: str, album: str, track_count: int,
+    ) -> None:
+        self._album_push_index += 1
+        self.progress.setRange(0, max(track_count, 1))
+        self.progress.setValue(0)
+        self.status.setText(
+            f"Push: {self._album_push_index}/{self._album_push_total} — "
+            f"{artist} — {album} ({track_count} tracks)"
+        )
+
+    def _on_album_push_track_progress(
+        self, artist: str, album: str, idx: int, total: int,
+        status: str, filename: str,
+    ) -> None:
+        self.progress.setValue(idx)
+        self.status.setText(
+            f"Push: {artist} — {album}: {status} {filename}"
+        )
+
+    def _on_album_push_album_done(self, report: dict) -> None:
+        # Status keeps the album's summary; next album_started overwrites.
+        bits = [f"copied {report['copied']}",
+                f"up-to-date {report['up_to_date']}",
+                f"pruned {report['pruned']}"]
+        if report["cover_written"]:
+            bits.append("cover")
+        if report["lrc_failed"]:
+            bits.append(f"{report['lrc_failed']} lrc skipped")
+        self.status.setText(
+            f"Push: {report['artist']} — {report['album']}: "
+            f"{', '.join(bits)}."
+        )
+
+    def _on_album_push_finished(self, total: int) -> None:
+        self.progress.setVisible(False)
+        self._album_push_runner = None
+        msg = f"Pushed {total} album{'s' if total != 1 else ''}."
+        self.status.setText(msg)
+        QMessageBox.information(self, "Album push done", msg)
+
+    def _on_album_push_error(self, msg: str) -> None:
+        self.progress.setVisible(False)
+        self._album_push_runner = None
+        QMessageBox.warning(self, "Album push error", msg)
 
     def _collect_track_paths(self, items: list[QTreeWidgetItem]) -> list[Path]:
         """Walk every selected item down to its track descendants and
