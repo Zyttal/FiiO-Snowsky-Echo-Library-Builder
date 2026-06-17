@@ -113,6 +113,18 @@ class BuildTab(QWidget):
             "when this is on."
         )
         outer.addWidget(self.enrich_check)
+        self.caa_check = QCheckBox(
+            "Fetch missing/low-res album covers from MusicBrainz Cover Art Archive"
+        )
+        self.caa_check.setToolTip(
+            "Before the build phase, walk every album folder; if its "
+            "cover.jpg is missing or smaller than the configured "
+            "max_cover_size_px, query MusicBrainz for the release and "
+            "fetch a fresh JPEG from the Cover Art Archive. Cached on disk "
+            "in <source>/.cover_art_cache/. The build pipeline embeds the "
+            "new cover into every track."
+        )
+        outer.addWidget(self.caa_check)
 
         # Row: action buttons
         btn_row = QHBoxLayout()
@@ -188,6 +200,14 @@ class BuildTab(QWidget):
             QMessageBox.warning(self, "No source files",
                                 "No audio found under the source folder.")
             return None
+
+        if self.caa_check.isChecked():
+            # Side-effect: writes <album>/cover.jpg files under `source`.
+            # _enrich_covers re-runs scan.discover so item.cover paths
+            # point at the freshly-written files.
+            from build_library import _enrich_covers
+            cfg.enrich_covers_via_caa = True
+            items = _enrich_covers(items, source, cfg, only)
 
         item_tags = []
         for item in items:

@@ -33,6 +33,11 @@ class Config:
     # to AAC m4a for codec uniformity. "flac" wraps the lossy source in a
     # FLAC container (v0.1.0 behavior, kept for users who want uniform .flac).
     download_audio_format: str = "passthrough"
+    # Fetch missing or low-resolution album covers from the MusicBrainz
+    # Cover Art Archive during build. Off by default to keep the build
+    # entirely local; turn on for compilations or rips whose folder-level
+    # cover.jpg is missing/tiny.
+    enrich_covers_via_caa: bool = False
 
     def resolved_workers(self) -> int:
         if self.workers is not None:

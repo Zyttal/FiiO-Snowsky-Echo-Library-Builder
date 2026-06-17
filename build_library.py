@@ -73,6 +73,47 @@ def _process_one(job_payload: dict) -> dict:
                 "strategy": strategy_name, "error": str(e)}
 
 
+def _enrich_covers(items, source_dir, cfg, only):
+    """For each unique album in `items`, ensure a high-enough-res cover.jpg
+    exists by fetching from the Cover Art Archive when needed. Re-runs
+    scan.discover so the WorkItem.cover paths point at the new files.
+
+    Reads the source artist + album from one representative track per
+    album (the first WorkItem in the group) — cheap, and matches what
+    the rest of the pipeline assumes about album-folder semantics."""
+    from src import cover_art
+
+    by_album: dict[Path, "scan.WorkItem"] = {}
+    for item in items:
+        by_album.setdefault(item.source.parent, item)
+
+    cache_dir = source_dir / ".cover_art_cache"
+    click.echo(f"CAA cover enrichment: {len(by_album)} album(s) to check.")
+    fetched = 0
+    for album_dir, sample in by_album.items():
+        try:
+            src_tags = tags.read_source(
+                sample.source, sample.album_folder_name, sample.disc_no,
+            )
+        except Exception:  # noqa: BLE001
+            continue
+        if src_tags.artist == "Unknown Artist" or src_tags.album == "Unknown Album":
+            continue
+        release_id, wrote = cover_art.enrich_album_cover(
+            album_dir,
+            artist=src_tags.album_artist or src_tags.artist,
+            album=src_tags.album,
+            year=(src_tags.date or "")[:4] or None,
+            cache_dir=cache_dir,
+            min_size_px=cfg.max_cover_size_px,
+        )
+        if wrote:
+            fetched += 1
+            click.echo(f"  cover: {album_dir.name}  ({release_id})")
+    click.echo(f"CAA cover enrichment: {fetched} written.")
+    return scan.discover(source_dir, only=only)
+
+
 def _selected_strategies(primary: str, mirror: str) -> list[Strategy]:
     out: list[Strategy] = [STRATEGIES[primary]]
     if mirror and mirror != "none" and mirror != primary:
@@ -116,8 +157,12 @@ def cli():
               default=None, help="Path to config.yaml (defaults to ./config.yaml).")
 @click.option("--workers", type=int, default=None,
               help="Parallel workers (default: CPU count - 1).")
+@click.option("--enrich-covers-via-caa/--no-enrich-covers-via-caa", default=None,
+              help="Fetch missing/low-res album covers from the MusicBrainz "
+                   "Cover Art Archive before the build. Overrides "
+                   "enrich_covers_via_caa in config.yaml.")
 def build(source_dir, output_dir, primary_format, mirror, only, compilation_match,
-          force, prune, dry_run, config_path, workers):
+          force, prune, dry_run, config_path, workers, enrich_covers_via_caa):
     """Convert and reorganize a music library for the Echo."""
     if not dry_run:
         check_ffmpeg()
@@ -126,6 +171,8 @@ def build(source_dir, output_dir, primary_format, mirror, only, compilation_matc
     cfg = config_mod.load(cfg_path)
     if workers:
         cfg.workers = workers
+    if enrich_covers_via_caa is not None:
+        cfg.enrich_covers_via_caa = enrich_covers_via_caa
 
     output_dir = output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -135,6 +182,9 @@ def build(source_dir, output_dir, primary_format, mirror, only, compilation_matc
     if not items:
         click.echo("No audio files found.", err=True)
         sys.exit(1)
+
+    if cfg.enrich_covers_via_caa and not dry_run:
+        items = _enrich_covers(items, source_dir.resolve(), cfg, only)
 
     strategies = _selected_strategies(primary_format, mirror)
     click.echo(f"Source: {source_dir}  ({len(items)} files)")
