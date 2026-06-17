@@ -6,6 +6,15 @@
 #   - pyinstaller in the active venv (added at first use below)
 #   - appimagetool on PATH (https://github.com/AppImage/AppImageKit)
 #   - curl, tar
+#
+# Qt 6.5+ runtime note:
+#   PySide6 6.5+ links libxcb-cursor0 at the system level; it isn't
+#   pulled in by apt automatically. PyInstaller catches it for the
+#   AppImage we produce here, but it must be installed on this build
+#   machine for the bundle step to see it, AND on any machine that runs
+#   the GUI from source (`python -m gui`):
+#       sudo apt install libxcb-cursor0
+#   The release CI workflow installs it explicitly for the same reason.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."

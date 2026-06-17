@@ -177,8 +177,18 @@ If you'd rather drive everything from a window instead of the terminal:
 pyenv exec python -m gui
 ```
 
-A single-window app opens with three tabs:
+One-time system dependency on Linux — PySide6 6.5+ needs an xcb cursor
+helper that isn't pulled in by Qt or apt automatically:
 
+```bash
+sudo apt install libxcb-cursor0
+```
+
+If you see `Could not load the Qt platform plugin "xcb"`, that's the missing package. As a fallback on a Wayland session you can also run `QT_QPA_PLATFORM=wayland pyenv exec python -m gui` without sudo.
+
+A single-window app opens with four tabs:
+
+- **Download** — point at a song list and a destination, watch each row enrich (MusicBrainz) and fetch (yt-dlp) live. Falls through to the Build tab when finished.
 - **Build** — same options as the CLI's `build` command, plus a live per-file progress table. Dry-run first if you want a preview.
 - **Library** — tree view of the output. Click the star column to mark a track favorite; the choice is saved in the manifest and survives rebuilds.
 - **Device** — point at the SD card, push your favorites as `Favorites.m3u`, or try to pull what the Echo considers favorited (best-effort — FiiO doesn't publish the format).
@@ -207,8 +217,10 @@ Each script bundles a static ffmpeg, so end-users don't need to install anything
 | Symptom | Try this |
 | --- | --- |
 | `ffmpeg not found` | `sudo apt install ffmpeg` |
+| `Could not load the Qt platform plugin "xcb"` when launching the GUI | `sudo apt install libxcb-cursor0` (PySide6 6.5+ runtime dep) |
 | Conversion fails on one file | usually a corrupt source — run `ffprobe <file>` to inspect |
 | Tracks still skip on the Echo after copying | run `verify` first; if clean, check the SD card filesystem (NTFS won't work) |
 | Library scan on the Echo takes forever | keep per-card file count under ~5000 |
+| Downloader picks a compilation, not the studio album | use the 3-field `Artist - Album - Title` form in your song list |
 
 That's the whole workflow — `cd`, build, verify, rsync, enjoy.
