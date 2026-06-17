@@ -40,6 +40,8 @@ class BuildTab(QWidget):
         self.ffmpeg_path = ffmpeg_path
         self.pool = QThreadPool.globalInstance()
         self._runner: BuildRunner | None = None
+        self._enrich_runner: TagEnrichmentRunner | None = None
+        self._pending_state: dict | None = None
         self._row_for_target: dict[str, int] = {}
         self._build_layout()
 
@@ -143,10 +145,15 @@ class BuildTab(QWidget):
         if path:
             edit.setText(path)
 
-    def _gather_jobs(self) -> tuple[list[JobSpec], Path] | None:
-        """Run the same scan/plan pipeline as the CLI's build, but stop short
-        of dispatching. Returns (jobs, output_dir) or None on user-facing error."""
-        from src import config as config_mod, layout, scan, tags
+    def _read_source_tags(self) -> dict | None:
+        """Phase 1 of the build pipeline: scan source, read tags with the
+        REAL artist/title intact (no compilation rewrite). Synchronous;
+        fast enough for libraries up to a few thousand files.
+
+        The compilation rewrite happens later in `_apply_comp_and_build`,
+        so MusicBrainz enrichment in between sees the real artist+title
+        instead of "Various Artists" / "Artist - Title"."""
+        from src import config as config_mod, scan, tags
 
         source = Path(self.source_edit.text()).expanduser()
         output = Path(self.output_edit.text()).expanduser()
@@ -176,17 +183,47 @@ class BuildTab(QWidget):
                                 "No audio found under the source folder.")
             return None
 
+        item_tags = []
+        for item in items:
+            t = tags.read_source(item.source, item.album_folder_name, item.disc_no)
+            # default_genre is a fallback when MB isn't asked to enrich;
+            # it gets applied here so the enrichment phase doesn't see
+            # tags with a missing genre when there's no need to look it up.
+            if t.genre is None and cfg.default_genre:
+                t.genre = cfg.default_genre
+            item_tags.append((item, t))
+
+        return {
+            "cfg": cfg,
+            "items": items,
+            "item_tags": item_tags,
+            "output": output,
+            "comp_match": comp_match,
+            "primary": primary,
+            "mirror": mirror,
+        }
+
+    def _apply_comp_and_build_jobs(self, state: dict) -> list[JobSpec]:
+        """Phase 3 of the build pipeline: apply compilation handling to
+        whatever the enrichment phase produced, compute target paths,
+        filter against the manifest, return ready-to-queue JobSpecs."""
+        from src import layout
         from build_library import _selected_strategies
         from src.manifest import MANIFEST_NAME, Manifest
+
+        cfg = state["cfg"]
+        items = state["items"]
+        item_tags = state["item_tags"]
+        output = state["output"]
+        comp_match = state["comp_match"]
+        primary = state["primary"]
+        mirror = state["mirror"]
+
         strategies = _selected_strategies(primary, mirror)
         manifest = Manifest(output / MANIFEST_NAME)
 
-        item_tags = []
         comp_counters: dict[tuple[str, int | None], int] = {}
-        for item in items:
-            t = tags.read_source(item.source, item.album_folder_name, item.disc_no)
-            if t.genre is None and cfg.default_genre:
-                t.genre = cfg.default_genre
+        for item, t in item_tags:
             if comp_match and comp_match.lower() in item.album_folder_name.lower():
                 original_artist = t.artist
                 t.title = f"{original_artist} - {t.title}"
@@ -197,7 +234,6 @@ class BuildTab(QWidget):
                 key = (item.album_folder_name, t.disc_no)
                 comp_counters[key] = comp_counters.get(key, 0) + 1
                 t.track_no = comp_counters[key]
-            item_tags.append((item, t))
 
         disc_index = layout.discs_per_album([(cfg, t) for _, t in item_tags])
         multi_disc = {k for k, v in disc_index.items() if len(v) > 1}
@@ -223,19 +259,21 @@ class BuildTab(QWidget):
                     src_tags_dict=src_tags.__dict__,
                     cfg_dict=cfg.__dict__,
                 ))
-        return jobs, output
+        return jobs
 
     def _build(self, dry_run: bool) -> None:
         if self.ffmpeg_path is None and not dry_run:
             QMessageBox.critical(self, "ffmpeg required",
                                  "ffmpeg is required for builds. Install it first.")
             return
-        gathered = self._gather_jobs()
-        if gathered is None:
+        state = self._read_source_tags()
+        if state is None:
             return
-        jobs, output_dir = gathered
 
         if dry_run:
+            # Skip enrichment for dry runs — the goal is to preview the
+            # plan quickly, not pay 5 minutes of MB lookups.
+            jobs = self._apply_comp_and_build_jobs(state)
             self.table.setRowCount(0)
             self._row_for_target.clear()
             for j in jobs[:200]:
@@ -252,33 +290,35 @@ class BuildTab(QWidget):
             )
             return
 
-        if not jobs:
-            QMessageBox.information(self, "Nothing to do",
-                                    "Manifest reports everything up-to-date.")
-            return
-
         if self.enrich_check.isChecked():
-            self._start_enrichment(jobs, output_dir)
+            self._start_enrichment(state)
         else:
-            self._start_build(jobs, output_dir)
+            jobs = self._apply_comp_and_build_jobs(state)
+            if not jobs:
+                QMessageBox.information(self, "Nothing to do",
+                                        "Manifest reports everything up-to-date.")
+                return
+            self._start_build(jobs, state["output"])
 
-    def _start_enrichment(self, jobs: list, output_dir: Path) -> None:
-        """Phase 1 — MusicBrainz enrichment. Walks every job missing a
-        genre, looks it up, mutates jobs in place. Then proceeds to the
-        build phase."""
-        # Deduplicate by (source, strategy=primary) so a FLAC+MP3 pair
-        # for the same source only triggers one lookup; the cache inside
-        # the runner also dedupes by (artist, title, album) across
-        # jobs that happen to be the same recording.
+    def _start_enrichment(self, state: dict) -> None:
+        """Phase 2 — MusicBrainz enrichment. Walks every track whose
+        SourceTags lacks a genre, queries MB with the REAL artist+title
+        (compilation rewrite hasn't happened yet), mutates the
+        SourceTags in place. Then runs phase 3 + the build."""
+        # to_enrich indexes into state["item_tags"]
         to_enrich: list[tuple[int, dict]] = []
-        for idx, j in enumerate(jobs):
-            if j.src_tags_dict.get("genre"):
-                continue
-            to_enrich.append((idx, dict(j.src_tags_dict)))
+        for idx, (_, t) in enumerate(state["item_tags"]):
+            if not t.genre:
+                to_enrich.append((idx, dict(t.__dict__)))
 
         if not to_enrich:
-            # Everything already has a genre — go straight to build.
-            self._start_build(jobs, output_dir)
+            # Nothing to look up — skip straight to comp + build.
+            jobs = self._apply_comp_and_build_jobs(state)
+            if not jobs:
+                QMessageBox.information(self, "Nothing to do",
+                                        "Manifest reports everything up-to-date.")
+                return
+            self._start_build(jobs, state["output"])
             return
 
         self.table.setRowCount(0)
@@ -286,8 +326,7 @@ class BuildTab(QWidget):
         self.progress.setRange(0, len(to_enrich))
         self.progress.setValue(0)
         self._set_running(True)
-        self._jobs_to_build = jobs
-        self._output_dir = output_dir
+        self._pending_state = state
 
         self._enrich_runner = TagEnrichmentRunner(to_enrich)
         self._enrich_runner.signals.progress.connect(self._on_enrich_progress)
@@ -308,14 +347,23 @@ class BuildTab(QWidget):
         )
 
     def _on_enrich_enriched(self, idx: int, updated_tags: dict) -> None:
-        self._jobs_to_build[idx].src_tags_dict.update(updated_tags)
-        # Reflect the genre that just landed for the row that's currently
-        # showing this artist/title (best-effort, not strictly mapped).
+        # Mutate the SourceTags in place so the upcoming compilation
+        # rewrite + job-build phase picks up the enriched fields.
+        t = self._pending_state["item_tags"][idx][1]
+        if updated_tags.get("genre"):
+            t.genre = updated_tags["genre"]
+        if updated_tags.get("date"):
+            t.date = updated_tags["date"]
+        if updated_tags.get("album_artist"):
+            t.album_artist = updated_tags["album_artist"]
+        # Reflect the genre that just landed in the currently displayed
+        # row for this artist/title (best-effort match by label).
         artist = updated_tags.get("artist", "")
         title = updated_tags.get("title", "")
+        target_label = f"{artist} - {title}"
         for row in range(self.table.rowCount()):
             item = self.table.item(row, 0)
-            if item and item.text() == f"{artist} - {title}":
+            if item and item.text() == target_label:
                 self.table.setItem(row, 1, _status_item("enriched"))
                 genre = updated_tags.get("genre", "")
                 self.table.setItem(row, 2, QTableWidgetItem(
@@ -324,13 +372,22 @@ class BuildTab(QWidget):
                 break
 
     def _on_enrich_finished(self, n: int) -> None:
-        # Move on to the build phase with the (now possibly mutated) job
-        # list.
-        self._start_build(self._jobs_to_build, self._output_dir)
+        # Phase 3: now that the SourceTags are enriched, apply the
+        # compilation rewrite and queue jobs.
+        jobs = self._apply_comp_and_build_jobs(self._pending_state)
+        output_dir = self._pending_state["output"]
+        self._pending_state = None
+        if not jobs:
+            self._set_running(False)
+            QMessageBox.information(self, "Nothing to do",
+                                    "Manifest reports everything up-to-date.")
+            return
+        self._start_build(jobs, output_dir)
 
     def _on_enrich_cancelled(self) -> None:
         self._set_running(False)
         self._enrich_runner = None
+        self._pending_state = None
         QMessageBox.information(self, "Enrichment cancelled",
                                 "Build was not started.")
 
@@ -357,7 +414,12 @@ class BuildTab(QWidget):
         self.pool.start(self._runner)
 
     def _cancel(self) -> None:
-        if self._runner:
+        # Cancel whichever phase is currently running. Both runners are
+        # tracked separately because the enrichment phase is its own
+        # background job before the BuildRunner is started.
+        if self._enrich_runner is not None:
+            self._enrich_runner.cancel()
+        if self._runner is not None:
             self._runner.cancel()
 
     def _on_file_done(self, result: dict) -> None:
