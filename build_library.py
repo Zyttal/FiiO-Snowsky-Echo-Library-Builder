@@ -490,10 +490,11 @@ def favorites_pull(sd_root):
 
     if not report.any_source_found:
         click.echo(
-            "No favorites file found on the SD card. The Echo keeps its "
-            "favorites in internal flash, not on the card — `favorites pull` "
-            "can only see files we (or another tool) have already written. "
-            "Use `favorites push` to export one."
+            "No .m3u found on the SD card. The Echo has no MTP mode, so "
+            "its on-device Favorites list (in internal flash) is unreachable "
+            "— `favorites pull` only surfaces files we (or another tool) "
+            "have already written to the card. Use `favorites push` to "
+            "export one."
         )
         return
 

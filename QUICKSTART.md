@@ -131,7 +131,7 @@ It only processes the new files — the existing 390 are recognized as up-to-dat
 | Make a smaller MP3 mirror alongside the FLAC tree | add `--mirror mp3` — produces `Echo-Library-MP3/` next to `Echo-Library/` |
 | Use MP3 instead of FLAC as the primary | add `--format mp3` |
 | Export favorites as Favorites.m3u on the SD card | `pyenv exec python build_library.py favorites push --output ... --sd-root /media/$USER/ECHO/` (backup-only — FiiO has stated the Echo's chip can't play M3U) |
-| List what's on the card | `pyenv exec python build_library.py favorites pull --sd-root /media/$USER/ECHO/` |
+| Scan SD card for previously-exported .m3u files | `pyenv exec python build_library.py favorites pull --sd-root /media/$USER/ECHO/` (the Echo has no MTP mode, so its internal Favorites list can't be read from the host — this only finds files we've already exported) |
 | Add tracks to a playlist | `pyenv exec python build_library.py playlist add --output ... --name Workout --track <path> [--track <path>...]` |
 | Push playlists to the SD card as folders | `pyenv exec python build_library.py playlist push --output ... --sd-root /media/$USER/ECHO/` |
 | Download a song list from YouTube | `pyenv exec python build_library.py download --list songs.txt --dest /mnt/games/Music/` |

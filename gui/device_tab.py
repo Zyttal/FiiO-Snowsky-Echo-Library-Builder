@@ -70,7 +70,7 @@ class DeviceTab(QWidget):
 
         # Action buttons
         btn_row = QHBoxLayout()
-        self.pull_btn = QPushButton("Probe SD card for existing favorites")
+        self.pull_btn = QPushButton("Scan SD card for existing .m3u backups")
         self.push_btn = QPushButton("Export favorites as .m3u backup")
         self.pull_btn.clicked.connect(self._pull)
         self.push_btn.clicked.connect(self._push)
@@ -80,14 +80,19 @@ class DeviceTab(QWidget):
         outer.addLayout(btn_row)
 
         caveat = QLabel(
-            "<small><b>Heads up:</b> FiiO has stated the Snowsky Echo's "
-            "chip can't play M3U playlists — the export writes a standard "
-            "CRLF .m3u as a <i>backup</i>, not for on-device playback. "
-            "FW V1.3.0 (April 2026) fixed routine media-library re-scans "
-            "from clearing Favorites, but firmware flashes themselves may "
-            "still reformat internal storage (per FiiO's install notes), so "
-            "the export is your restore path across firmware updates and "
-            "for reading on any other player.</small>"
+            "<small><b>Heads up:</b> the Echo has no MTP mode, so its "
+            "internal Favorites list (in internal flash) can't be read "
+            "from the host. Only the SD card is visible, and the device "
+            "doesn't write favorites there. The Scan button just looks "
+            "for .m3u files we (or you) have previously exported to the "
+            "card — not what's favorited on-device.<br>"
+            "<br>"
+            "The Export button writes a standard CRLF .m3u as a "
+            "<i>backup</i>, not for on-device playback (FiiO has stated "
+            "the chip can't play M3U). FW V1.3.0 fixed library re-scans "
+            "from clearing Favorites, but firmware flashes still reformat "
+            "internal storage — so the export is your restore path across "
+            "FW updates, and for reading on any other player.</small>"
         )
         caveat.setWordWrap(True)
         outer.addWidget(caveat)
@@ -138,10 +143,11 @@ class DeviceTab(QWidget):
 
         if not report.any_source_found:
             self.status.setText(
-                "No favorites file found on the SD card. The Echo keeps its "
-                "internal Favorites in flash (not on the card), so this probe "
-                "only surfaces files we (or another tool) have written. Click "
-                "\"Export favorites as .m3u backup\" above to create one."
+                "No .m3u found on the SD card. The Echo has no MTP mode, "
+                "so its on-device Favorites list (in internal flash) is "
+                "unreachable — this scan only surfaces files we (or another "
+                "tool) have exported to the card. Click \"Export favorites "
+                "as .m3u backup\" above to create one."
             )
             return
 

@@ -195,13 +195,26 @@ dropped into the playlist folder so the Echo's folder view shows artwork.
 
 ### Favorites
 
-The Echo's on-device "Add to Favorites" list lives in internal flash and isn't
-exposed on the SD card in any documented format. Firmware V1.3.0 (April 2026)
-fixed a bug where media-library re-scans wiped the list — on V1.3.0+ routine
-library refreshes are safe. Firmware flashes themselves still risk the list:
-FiiO's install instructions warn that "the firmware upgrade may first format
-the internal memory." This tool can't fix the device-side problem, but it
-can give you a durable backup to restore from:
+The Echo's on-device "Add to Favorites" list lives in internal flash. **It
+cannot be read from the host computer** — the Echo only offers USB Mass
+Storage mode (no MTP), and Mass Storage exposes only the SD card. Internal
+flash is invisible. So this tool cannot pull what the device thinks is
+favorited; it can only manage favorites you mark on the host side and
+export them as a backup the device's chip happens not to be able to play
+(see below).
+
+Loss surface for on-device Favorites:
+
+- Firmware V1.3.0 (April 2026) fixed a bug where routine media-library
+  re-scans cleared the list. On V1.3.0+ library refreshes are safe.
+- Firmware *flashes* still reformat internal storage per FiiO's install
+  notes ("the firmware upgrade may first format the internal memory"),
+  so the list is at risk every time you update FW.
+
+This tool's `favorites push` writes a CRLF M3U at the SD card root from
+manifest-marked favorites. Because the Echo's chip can't play M3U, this
+.m3u is purely a backup — restore by hand after a firmware flash, or
+read it on any phone/PC player that grokks M3U:
 
 ```bash
 # Push manifest favorites to <SD card>/Favorites.m3u
