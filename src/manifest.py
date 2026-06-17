@@ -125,13 +125,20 @@ class Manifest:
     def set_favorite(self, target: Path, value: bool) -> bool:
         """Flip favorite on the entry whose target matches `target`. Returns
         True if an entry was updated. Used by the GUI's Library tab when the
-        user clicks a star."""
+        user clicks a star.
+
+        Auto-registers a manifest entry when the target is on disk but
+        not yet tracked, so the Library tab works on FS-scanned tracks
+        the user never built into the output tree."""
         target_str = str(target)
         for entry in self._entries.values():
             if entry.target == target_str:
                 entry.favorite = value
                 return True
-        return False
+        if not self._register_fs_entry(target):
+            return False
+        self._entries[self._key(target, target.suffix.lstrip(".").lower())].favorite = value
+        return True
 
     def favorites(self, fmt: str | None = None) -> list[Entry]:
         """All entries marked favorite. Filter by format if given."""
@@ -143,7 +150,11 @@ class Manifest:
     def add_to_playlist(self, target: Path, playlist: str) -> bool:
         """Tag the entry at `target` as belonging to `playlist`. Returns
         True on update. Names are kept verbatim — case and whitespace
-        matter, the Echo's folder browser displays them directly."""
+        matter, the Echo's folder browser displays them directly.
+
+        Auto-registers a manifest entry when the target is on disk but
+        not yet tracked, so the Library tab can add anything it shows to
+        a playlist regardless of whether it came from a `build` run."""
         target_str = str(target)
         for entry in self._entries.values():
             if entry.target != target_str:
@@ -152,7 +163,31 @@ class Manifest:
                 entry.playlists.append(playlist)
                 return True
             return False
-        return False
+        if not self._register_fs_entry(target):
+            return False
+        key = self._key(target, target.suffix.lstrip(".").lower())
+        self._entries[key].playlists.append(playlist)
+        return True
+
+    def _register_fs_entry(self, target: Path) -> bool:
+        """Create a manifest entry for a track found on disk but not yet
+        tracked. `source` mirrors `target` (we don't have a separate
+        source for FS-scanned tracks). Returns False if the file can't
+        be stat'd."""
+        try:
+            st = target.stat()
+        except OSError:
+            return False
+        fmt = target.suffix.lstrip(".").lower() or "unknown"
+        key = self._key(target, fmt)
+        self._entries[key] = Entry(
+            source=str(target),
+            fmt=fmt,
+            target=str(target),
+            source_mtime=st.st_mtime,
+            source_size=st.st_size,
+        )
+        return True
 
     def remove_from_playlist(self, target: Path, playlist: str) -> bool:
         target_str = str(target)

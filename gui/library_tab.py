@@ -79,6 +79,18 @@ class LibraryTab(QWidget):
         row.addWidget(self.cancel_btn)
         outer.addLayout(row)
 
+        # Live search across the tree — matches against track filename,
+        # album, or artist. Empty needle restores the full tree.
+        search_row = QHBoxLayout()
+        search_row.addWidget(QLabel("Search:"))
+        self.search_edit = QLineEdit()
+        self.search_edit.setPlaceholderText(
+            "Filter by artist / album / track…"
+        )
+        self.search_edit.textChanged.connect(self._on_search_changed)
+        search_row.addWidget(self.search_edit)
+        outer.addLayout(search_row)
+
         # Destructive actions row — kept visible but red-tinted to remind
         # the user this writes to disk.
         danger_row = QHBoxLayout()
@@ -334,6 +346,33 @@ class LibraryTab(QWidget):
         if self._scan is not None:
             self._scan.cancel()
 
+    def _on_search_changed(self, text: str) -> None:
+        """Live-filter the tree by typed text. Empty needle restores the
+        full tree. A leaf is shown when the needle appears in the track
+        filename, the album row text, or the artist row text; matching
+        leaves drag their ancestors visible too."""
+        needle = text.strip().lower()
+        if not needle:
+            for i in range(self.tree.topLevelItemCount()):
+                _show_recursive(self.tree.topLevelItem(i), True)
+            return
+        # Hide everything first, then unhide matches + ancestors.
+        for i in range(self.tree.topLevelItemCount()):
+            _show_recursive(self.tree.topLevelItem(i), False)
+        for item in self._iter_track_items():
+            album_item = item.parent()
+            artist_item = album_item.parent() if album_item else None
+            hay = " ".join((
+                item.text(self.COL_NAME),
+                album_item.text(self.COL_NAME) if album_item else "",
+                artist_item.text(self.COL_NAME) if artist_item else "",
+            )).lower()
+            if needle in hay:
+                cur = item
+                while cur is not None:
+                    cur.setHidden(False)
+                    cur = cur.parent()
+
     def _fetch_lyrics(self) -> None:
         """Spawn LyricsRunner over the loaded library. Idempotent; skips
         tracks that already have a sidecar."""
@@ -345,6 +384,11 @@ class LibraryTab(QWidget):
             return
         self.lyrics_btn.setEnabled(False)
         self.status.setText("Lyrics: starting…")
+        # Reuse the scan progress bar — busy indicator (range 0..0) until
+        # the runner's `started` signal hands us the real total.
+        self.progress.setRange(0, 0)
+        self.progress.setValue(0)
+        self.progress.setVisible(True)
         self._lyrics_runner = LyricsRunner(self._output_dir, overwrite=False)
         self._lyrics_runner.signals.started.connect(self._on_lyrics_started)
         self._lyrics_runner.signals.progress.connect(self._on_lyrics_progress)
@@ -353,14 +397,18 @@ class LibraryTab(QWidget):
         self._pool.start(self._lyrics_runner)
 
     def _on_lyrics_started(self, total: int) -> None:
+        self.progress.setRange(0, max(total, 1))
+        self.progress.setValue(0)
         self.status.setText(f"Lyrics: 0/{total} tracks")
 
     def _on_lyrics_progress(self, i: int, total: int, label: str) -> None:
+        self.progress.setValue(i)
         self.status.setText(f"Lyrics: {i}/{total} — {label}")
 
     def _on_lyrics_finished(self, fetched: int, skipped: int,
                             misses: int, errors: int) -> None:
         self.lyrics_btn.setEnabled(True)
+        self.progress.setVisible(False)
         self._lyrics_runner = None
         msg = (f"{fetched} fetched, {skipped} already-present, "
                f"{misses} no-match, {errors} errors")
@@ -369,6 +417,7 @@ class LibraryTab(QWidget):
 
     def _on_lyrics_error(self, msg: str) -> None:
         self.lyrics_btn.setEnabled(True)
+        self.progress.setVisible(False)
         self._lyrics_runner = None
         QMessageBox.warning(self, "Lyrics error", msg)
 
@@ -777,3 +826,12 @@ class LibraryTab(QWidget):
                 album = artist.child(j)
                 for k in range(album.childCount()):
                     yield album.child(k)
+
+
+def _show_recursive(item, visible: bool) -> None:
+    """Hide/show an item and every descendant. Used by the search filter
+    to reset the tree's visibility state in one pass before unhiding
+    matches."""
+    item.setHidden(not visible)
+    for i in range(item.childCount()):
+        _show_recursive(item.child(i), visible)

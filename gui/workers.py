@@ -416,6 +416,95 @@ def _read_album_cover(album_dir: Path, sample_flac=None) -> bytes | None:
     return None
 
 
+class AlbumPushSignals(QObject):
+    """Per-album signals emitted by AlbumPushRunner."""
+    started = Signal(int)                              # total albums queued
+    album_started = Signal(str, int)                   # folder name, track count
+    track_progress = Signal(str, int, int, str, str)
+    # ^ folder name, index, total, status, filename
+    album_done = Signal(dict)
+    # ^ {folder, copied, up_to_date, pruned, cover_written, lrc_failed}
+    finished = Signal(int)                             # total albums pushed
+    cancelled = Signal()
+    error = Signal(str)
+
+
+class AlbumPushRunner(QRunnable):
+    """Push one or more album folders to the SD card on a background
+    thread. Each album's copy step is sequential (SD I/O dominates).
+
+    `album_dirs` is a flat list of album folder paths — the Upload tab
+    derives them from the library tree's manifest entries or the FS."""
+
+    def __init__(
+        self,
+        album_dirs: list[Path],
+        sd_root: Path,
+        cfg_dict: dict,
+    ) -> None:
+        super().__init__()
+        self.album_dirs = album_dirs
+        self.sd_root = sd_root
+        self.cfg_dict = cfg_dict
+        self.signals = AlbumPushSignals()
+        self._cancel = False
+
+    def cancel(self) -> None:
+        self._cancel = True
+
+    def run(self) -> None:
+        from src import config as config_mod
+        from src.album import push_album
+
+        try:
+            cfg = config_mod.Config(**self.cfg_dict)
+            self.signals.started.emit(len(self.album_dirs))
+            pushed = 0
+            for album_dir in self.album_dirs:
+                if self._cancel:
+                    self.signals.cancelled.emit()
+                    return
+                folder_name = album_dir.name
+                # Pre-count tracks for the album_started signal so the
+                # progress bar has a real range from the start.
+                track_count = sum(
+                    1 for p in album_dir.iterdir()
+                    if p.is_file()
+                    and p.suffix.lower() in {
+                        ".flac", ".m4a", ".opus", ".mp3", ".ogg", ".wav"
+                    }
+                )
+                self.signals.album_started.emit(folder_name, track_count)
+
+                def emit_progress(
+                    idx, total, status, filename, _folder=folder_name,
+                ):
+                    self.signals.track_progress.emit(
+                        _folder, idx, total, status, filename,
+                    )
+
+                report = push_album(
+                    album_dir, self.sd_root, cfg, prune=True,
+                    progress_callback=emit_progress,
+                    cancel_check=lambda: self._cancel,
+                )
+                if self._cancel:
+                    self.signals.cancelled.emit()
+                    return
+                self.signals.album_done.emit({
+                    "folder": folder_name,
+                    "copied": len(report.copied),
+                    "up_to_date": len(report.skipped_up_to_date),
+                    "pruned": len(report.pruned),
+                    "cover_written": report.cover_written,
+                    "lrc_failed": len(report.lrc_failed),
+                })
+                pushed += 1
+            self.signals.finished.emit(pushed)
+        except Exception as e:  # noqa: BLE001
+            self.signals.error.emit(f"{type(e).__name__}: {e}")
+
+
 class LyricsSignals(QObject):
     """Per-track signals emitted by LyricsRunner."""
     started = Signal(int)              # total tracks to consider
@@ -426,10 +515,19 @@ class LyricsSignals(QObject):
 
 
 class LyricsRunner(QRunnable):
-    """Walk every manifest entry and drop a <track>.lrc sidecar fetched
-    from LRCLIB. Skips tracks that already have a sidecar unless
-    `overwrite=True`. Sequential to stay within LRCLIB's friendly-usage
-    expectations (no documented hard rate limit, but no need to hammer)."""
+    """Walk every audio file under `library_root` and drop a <track>.lrc
+    sidecar fetched from LRCLIB. Skips tracks that already have a
+    sidecar unless `overwrite=True`. Sequential to stay within LRCLIB's
+    friendly-usage expectations (no documented hard rate limit, but no
+    need to hammer).
+
+    Walks the FS directly (not the manifest) so the user can fetch
+    lyrics for everything the Library tab shows them, regardless of
+    whether each track has a manifest entry."""
+
+    # Mirror what the Echo can play — keep this in sync with the
+    # output strategies in src/convert.py.
+    AUDIO_EXTS = {".flac", ".m4a", ".opus", ".mp3", ".ogg"}
 
     def __init__(self, library_root: Path, overwrite: bool = False) -> None:
         super().__init__()
@@ -442,14 +540,14 @@ class LyricsRunner(QRunnable):
         self._cancel = True
 
     def run(self) -> None:
-        from src.manifest import MANIFEST_NAME, Manifest
         from src import lyrics as lyrics_mod
         import mutagen
 
         try:
-            manifest = Manifest(self.library_root / MANIFEST_NAME)
-            entries = manifest.all_entries()
-            targets = [Path(e.target) for e in entries if Path(e.target).exists()]
+            targets = sorted(
+                p for p in self.library_root.rglob("*")
+                if p.is_file() and p.suffix.lower() in self.AUDIO_EXTS
+            )
             self.signals.started.emit(len(targets))
             fetched = skipped = misses = errors = 0
             for i, target in enumerate(targets):

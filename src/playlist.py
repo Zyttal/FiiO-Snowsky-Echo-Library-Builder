@@ -40,6 +40,10 @@ class PushReport:
     pruned: list[Path] = field(default_factory=list)
     missing_sources: list[Path] = field(default_factory=list)
     cover_written: bool = False
+    # Sidecar copies that hit an OSError (typically read-only SD card).
+    # The audio side may have succeeded — we don't abort the whole push
+    # for a missing lyrics file.
+    lrc_failed: list[Path] = field(default_factory=list)
 
 
 def push_playlist(
@@ -97,6 +101,25 @@ def push_playlist(
             shutil.copy2(src, target)
             report.copied.append(target)
             status = "copied"
+        # Carry the .lrc sidecar alongside the audio. Lyrics live in
+        # <source>.lrc next to the track; the FiiO Echo reads
+        # <target>.lrc on playback. Always copy when the sidecar
+        # exists, even when the audio was up-to-date — the .lrc may
+        # have landed after a previous push.
+        #
+        # Treat OSError on the sidecar as a soft failure: an SD card
+        # remounted read-only (FAT/ExFAT after an improper eject is
+        # common) shouldn't abort the rest of the playlist. The audio
+        # side is the primary thing the user pushed.
+        lrc_src = src.with_suffix(".lrc")
+        lrc_dst = target.with_suffix(".lrc")
+        if lrc_src.is_file():
+            expected_targets.add(lrc_dst)
+            if not _up_to_date(lrc_src, lrc_dst):
+                try:
+                    shutil.copy2(lrc_src, lrc_dst)
+                except OSError:
+                    report.lrc_failed.append(lrc_dst)
         if progress_callback:
             progress_callback(index, total, status, target_name)
 
