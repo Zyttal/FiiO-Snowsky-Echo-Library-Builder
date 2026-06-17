@@ -130,7 +130,43 @@ It only processes the new files — the existing 390 are recognized as up-to-dat
 | Only process one album | add `--only "Undertow"` (substring match on folder name) |
 | Make a smaller MP3 mirror alongside the FLAC tree | add `--mirror mp3` — produces `Echo-Library-MP3/` next to `Echo-Library/` |
 | Use MP3 instead of FLAC as the primary | add `--format mp3` |
+| Write a Favorites.m3u to the SD card | `pyenv exec python build_library.py favorites push --output ... --sd-root /media/$USER/ECHO/` |
+| List what the Echo has favorited on the card | `pyenv exec python build_library.py favorites pull --sd-root /media/$USER/ECHO/` |
+| Launch the desktop GUI instead | `pyenv exec python -m gui` |
 | Run the tests | `pyenv exec python -m pytest tests/ -v` |
+
+## Launching the GUI
+
+If you'd rather drive everything from a window instead of the terminal:
+
+```bash
+pyenv exec python -m gui
+```
+
+A single-window app opens with three tabs:
+
+- **Build** — same options as the CLI's `build` command, plus a live per-file progress table. Dry-run first if you want a preview.
+- **Library** — tree view of the output. Click the star column to mark a track favorite; the choice is saved in the manifest and survives rebuilds.
+- **Device** — point at the SD card, push your favorites as `Favorites.m3u`, or try to pull what the Echo considers favorited (best-effort — FiiO doesn't publish the format).
+
+The GUI reuses the same job pipeline as the CLI — no behavior differences, just a friendlier surface.
+
+## Standalone installers (for people without Python)
+
+If you want to hand this to someone who isn't going to set up pyenv:
+
+```bash
+# Linux (produces an AppImage in dist/)
+packaging/build_linux.sh
+
+# macOS (produces a .dmg in dist/)
+packaging/build_macos.sh
+
+# Windows (run in PowerShell; produces echo-library-builder.exe in dist\)
+.\packaging\build_windows.ps1
+```
+
+Each script bundles a static ffmpeg, so end-users don't need to install anything else. Build artifacts live in `dist/` and aren't committed. The macOS `.app` is unsigned — first-time users must right-click → Open to bypass Gatekeeper.
 
 ## If something goes wrong
 

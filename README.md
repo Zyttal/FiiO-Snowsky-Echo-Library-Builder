@@ -22,6 +22,8 @@ files fail to play. The known culprits — none documented in the manual — are
 | Nested `Disc 1/Disc 2/` folders | Device sorts by folder then filename — not by DISCNUMBER tag — so order breaks | Flattens to `Album (Disc 1)/`, `Album (Disc 2)/` |
 | Track number as `3/12` | Some firmware versions display it literally | Writes bare `TRACKNUMBER=3` |
 | 24-bit / high-sample-rate FLAC | EQ silently disables above 16-bit | Downconverts to 16-bit / 44.1 kHz by default |
+| Source FLACs missing the GENRE tag | Echo shows "Unknown" for every track | Optional `default_genre` config fallback fills in a value when the source has none |
+| Favorites kept only inside the device | No way to back up or restore them | `Favorites.m3u` push from the GUI/CLI seeds a playlist the Echo reads |
 
 Everything is configurable; the defaults match what the device prefers.
 
@@ -124,6 +126,43 @@ track title and sequential numbering per disc:
 Without the flag, the tool disperses tracks to their tagged ARTIST folders
 (useful if you want artist-based browsing on the Echo).
 
+### Favorites
+
+The Echo's on-device "Add to Favorites" list lives in internal flash and isn't
+exposed on the SD card in any documented format. This tool gives you a way
+around that: mark tracks favorite in the GUI (Library tab) and push them as
+a CRLF M3U playlist the device reads.
+
+```bash
+# Push manifest favorites to <SD card>/Favorites.m3u
+./build_library.py favorites push --output /mnt/games/Music/Echo-Library \
+    --sd-root /media/$USER/ECHO/
+
+# Best-effort: read favorites back off the card (probes hidden FiiO dirs,
+# SQLite, plain playlists). Returns nothing if favorites are flash-only.
+./build_library.py favorites pull --sd-root /media/$USER/ECHO/
+```
+
+### GUI
+
+A PySide6 desktop GUI ships in `gui/`. Same job pipeline as the CLI, three
+tabs (Build / Library / Device).
+
+```bash
+pyenv exec python -m gui
+```
+
+For non-Python users, build a standalone installer per OS:
+
+```bash
+packaging/build_linux.sh        # AppImage in dist/
+packaging/build_macos.sh        # .dmg in dist/
+./packaging/build_windows.ps1   # .exe in dist\ (PowerShell)
+```
+
+Each bundles a static ffmpeg so end-users don't need to install anything.
+The macOS `.app` is unsigned; first-time users must right-click → Open.
+
 ### Tests
 
 ```bash
@@ -199,15 +238,28 @@ echo-library-builder/
 ├── requirements.txt
 ├── config.yaml
 ├── build_library.py        # CLI
-└── src/
-    ├── config.py           # defaults + YAML loading
-    ├── scan.py             # source-tree walker, disc detection
-    ├── tags.py             # mutagen: read/write Vorbis + ID3v2.3
-    ├── convert.py          # ffmpeg strategies (FLAC / MP3 / DSD)
-    ├── cover.py            # Pillow: resize cover.jpg, in-memory cache
-    ├── layout.py           # compute Artist/Album/NN - Title.flac
-    ├── sanitize.py         # filename-safe transforms
-    └── manifest.py         # JSON manifest for incremental re-runs
+├── src/
+│   ├── config.py           # defaults + YAML loading
+│   ├── scan.py             # source-tree walker, disc detection
+│   ├── tags.py             # mutagen: read/write Vorbis + ID3v2.3
+│   ├── convert.py          # ffmpeg strategies (FLAC / MP3 / DSD)
+│   ├── cover.py            # Pillow: resize cover.jpg, in-memory cache
+│   ├── layout.py           # compute Artist/Album/NN - Title.flac
+│   ├── sanitize.py         # filename-safe transforms
+│   ├── favorites.py        # M3U write + best-effort device probe
+│   └── manifest.py         # JSON manifest for incremental re-runs
+├── gui/                    # PySide6 desktop GUI (python -m gui)
+│   ├── main.py             # QApplication + tabbed main window
+│   ├── build_tab.py        # source/output pickers + per-file progress
+│   ├── library_tab.py      # tree view + favorite toggle column
+│   ├── device_tab.py       # SD card picker + push/pull favorites
+│   ├── workers.py          # QRunnable wrapper around the CLI's job pipeline
+│   └── ffmpeg_probe.py     # locate bundled or system ffmpeg
+└── packaging/              # one-shot installer builds per OS
+    ├── pyinstaller.spec
+    ├── build_linux.sh      # → dist/echo-library-builder-x86_64.AppImage
+    ├── build_macos.sh      # → dist/echo-library-builder.dmg
+    └── build_windows.ps1   # → dist\echo-library-builder.exe
 ```
 
 ## Troubleshooting
