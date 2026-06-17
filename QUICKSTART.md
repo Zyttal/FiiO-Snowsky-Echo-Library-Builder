@@ -131,7 +131,9 @@ It only processes the new files — the existing 390 are recognized as up-to-dat
 | Make a smaller MP3 mirror alongside the FLAC tree | add `--mirror mp3` — produces `Echo-Library-MP3/` next to `Echo-Library/` |
 | Use MP3 instead of FLAC as the primary | add `--format mp3` |
 | Export favorites as Favorites.m3u on the SD card | `pyenv exec python build_library.py favorites push --output ... --sd-root /media/$USER/ECHO/` (backup-only — FiiO has stated the Echo's chip can't play M3U) |
-| List what the Echo has favorited on the card | `pyenv exec python build_library.py favorites pull --sd-root /media/$USER/ECHO/` |
+| List what's on the card | `pyenv exec python build_library.py favorites pull --sd-root /media/$USER/ECHO/` |
+| Add tracks to a playlist | `pyenv exec python build_library.py playlist add --output ... --name Workout --track <path> [--track <path>...]` |
+| Push playlists to the SD card as folders | `pyenv exec python build_library.py playlist push --output ... --sd-root /media/$USER/ECHO/` |
 | Download a song list from YouTube | `pyenv exec python build_library.py download --list songs.txt --dest /mnt/games/Music/` |
 | Launch the desktop GUI instead | `pyenv exec python -m gui` |
 | Run the tests | `pyenv exec python -m pytest tests/ -v` |
@@ -186,12 +188,13 @@ sudo apt install libxcb-cursor0
 
 If you see `Could not load the Qt platform plugin "xcb"`, that's the missing package. As a fallback on a Wayland session you can also run `QT_QPA_PLATFORM=wayland pyenv exec python -m gui` without sudo.
 
-A single-window app opens with four tabs:
+A single-window app opens with five tabs:
 
 - **Download** — point at a song list and a destination, watch each row enrich (MusicBrainz) and fetch (yt-dlp) live. Falls through to the Build tab when finished.
 - **Build** — same options as the CLI's `build` command, plus a live per-file progress table. Dry-run first if you want a preview.
-- **Library** — tree view of the output. Click the star column to mark a track favorite; the choice is saved in the manifest and survives rebuilds.
-- **Device** — point at the SD card, push your favorites as `Favorites.m3u`, or try to pull what the Echo considers favorited (best-effort — FiiO doesn't publish the format).
+- **Library** — tree view of the output. Click the star column to mark a track favorite, right-click for an "Add to playlist" menu. Choices are saved in the manifest and survive rebuilds.
+- **Playlists** — manage playlist membership (left pane: playlists, right pane: tracks). One-click "Push to card" copies tracks to `<SD>/Playlists/<Name>/` for folder-as-playlist playback on the Echo. Songs can be in multiple playlists at once (separate copies on the card).
+- **Device** — point at the SD card, export your favorites as `Favorites.m3u`, or try to pull what's on the card (best-effort — FiiO doesn't publish the format).
 
 The GUI reuses the same job pipeline as the CLI — no behavior differences, just a friendlier surface.
 

@@ -18,6 +18,13 @@ flow, plus three new top-level features:
   internal storage (FW V1.3.0 fixed routine library scans from wiping
   Favorites, but the firmware-flash risk remains), or for reading on any
   other M3U-aware player.
+- **Playlists (folder-as-playlist)** — since the Echo can read folder
+  structures but not M3U, "playlists" are physical folders at
+  `<SD>/Playlists/<Name>/` with sequentially-numbered tracks. CLI
+  (`playlist add / remove / list / push`) and a Playlists GUI tab. A
+  track can be in multiple playlists; each membership becomes a real
+  file copy on the SD card (FAT32/exFAT lack hardlinks/symlinks). Push
+  is incremental with prune-on-removal.
 - **YouTube downloader** — feed a song list to the Download tab (or
   `./build_library.py download --list ...`); each line is enriched via
   MusicBrainz and landed in the source tree as a tagged FLAC ready for

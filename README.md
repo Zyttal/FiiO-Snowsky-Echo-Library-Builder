@@ -157,6 +157,42 @@ sees "Unknown" for downloaded tracks.
 their ToS and the legality varies by jurisdiction. This tool exists for
 personal-library use on the user's own device; how you use it is on you.
 
+### Playlists (folder-as-playlist)
+
+The Echo can't play M3U (chip limit), but its Folder browse mode shows any
+directory of audio as a playable group. So a "playlist" is a physical folder
+at `<SD>/Playlists/<Name>/` holding sequentially-numbered copies of every
+member track. The Echo's folder view sees `Workout`, `Chill`, etc. as
+navigable groups.
+
+```bash
+# Add tracks to a playlist (operates on the manifest)
+./build_library.py playlist add --output /mnt/games/Music/Echo-Library \
+    --name Workout \
+    --track "/mnt/games/Music/Echo-Library/TOOL/Ænima/01 - Stinkfist.flac" \
+    --track "/mnt/games/Music/Echo-Library/TOOL/Ænima/02 - Eulogy.flac"
+
+# List playlists / contents
+./build_library.py playlist list --output /mnt/games/Music/Echo-Library
+./build_library.py playlist list --output /mnt/games/Music/Echo-Library --name Workout
+
+# Push to the SD card (one playlist or all of them)
+./build_library.py playlist push --output ... --sd-root /media/$USER/ECHO/ --name Workout
+./build_library.py playlist push --output ... --sd-root /media/$USER/ECHO/
+```
+
+The GUI has a dedicated **Playlists** tab plus a right-click "Add to
+playlist…" on every track in the **Library** tab.
+
+**A song can be in multiple playlists.** FAT32 and exFAT have no hardlinks
+or symlinks, so each membership is a physical file copy on the card. Disk
+overhead is small in practice: a 30-track playlist is ~150 MB, trivial on
+a 256 GB card.
+
+`push` is incremental — tracks already on the card with the same mtime/size
+are skipped, stale tracks get pruned. The first track's `cover.jpg` is
+dropped into the playlist folder so the Echo's folder view shows artwork.
+
 ### Favorites
 
 The Echo's on-device "Add to Favorites" list lives in internal flash and isn't
@@ -315,12 +351,14 @@ echo-library-builder/
 │   ├── song_list.py        # parse the downloader's input file
 │   ├── musicbrainz.py      # canonical tag enrichment
 │   ├── downloader.py       # yt-dlp + MB + tag write, all in one
+│   ├── playlist.py         # folder-as-playlist push + incremental sync
 │   └── manifest.py         # JSON manifest for incremental re-runs
 ├── gui/                    # PySide6 desktop GUI (python -m gui)
 │   ├── main.py             # QApplication + tabbed main window
 │   ├── download_tab.py     # song-list picker + per-song status
 │   ├── build_tab.py        # source/output pickers + per-file progress
-│   ├── library_tab.py      # tree view + favorite toggle column
+│   ├── library_tab.py      # tree view + favorite/playlist columns
+│   ├── playlists_tab.py    # manage playlist membership + push to card
 │   ├── device_tab.py       # SD card picker + push/pull favorites
 │   ├── workers.py          # QRunnable wrapper around the CLI's job pipeline
 │   └── ffmpeg_probe.py     # locate bundled or system ffmpeg
