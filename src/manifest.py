@@ -21,6 +21,7 @@ class Entry:
     target: str
     source_mtime: float
     source_size: int
+    favorite: bool = False
 
 
 class Manifest:
@@ -76,12 +77,15 @@ class Manifest:
 
     def record(self, source: Path, fmt: str, target: Path) -> None:
         st = source.stat()
-        self._entries[self._key(source, fmt)] = Entry(
+        key = self._key(source, fmt)
+        prev = self._entries.get(key)
+        self._entries[key] = Entry(
             source=str(source),
             fmt=fmt,
             target=str(target),
             source_mtime=st.st_mtime,
             source_size=st.st_size,
+            favorite=prev.favorite if prev else False,
         )
 
     def forget(self, source: Path, fmt: str) -> Entry | None:
@@ -93,3 +97,21 @@ class Manifest:
     def orphans(self) -> list[Entry]:
         """Entries whose source no longer exists."""
         return [e for e in self._entries.values() if not Path(e.source).exists()]
+
+    def set_favorite(self, target: Path, value: bool) -> bool:
+        """Flip favorite on the entry whose target matches `target`. Returns
+        True if an entry was updated. Used by the GUI's Library tab when the
+        user clicks a star."""
+        target_str = str(target)
+        for entry in self._entries.values():
+            if entry.target == target_str:
+                entry.favorite = value
+                return True
+        return False
+
+    def favorites(self, fmt: str | None = None) -> list[Entry]:
+        """All entries marked favorite. Filter by format if given."""
+        return [
+            e for e in self._entries.values()
+            if e.favorite and (fmt is None or e.fmt == fmt)
+        ]

@@ -327,5 +327,58 @@ def verify(output_dir):
             click.echo(f"  ... and {len(issues) - 30} more")
 
 
+@cli.group()
+def favorites():
+    """Read favorites off the device or push manifest favorites to the SD card."""
+
+
+@favorites.command("push")
+@click.option("--output", "output_dir", type=click.Path(exists=True, file_okay=False,
+              path_type=Path), required=True,
+              help="Output library root (also the SD card root if running from the card).")
+@click.option("--sd-root", type=click.Path(file_okay=False, path_type=Path), default=None,
+              help="SD card root if different from --output. Defaults to --output.")
+@click.option("--format", "fmt", type=click.Choice(list(STRATEGIES.keys())), default="flac",
+              show_default=True, help="Pick favorites from this format's tree.")
+@click.option("--name", default="Favorites.m3u", show_default=True,
+              help="Playlist filename written at the SD card root.")
+def favorites_push(output_dir, sd_root, fmt, name):
+    """Write a Favorites.m3u from manifest-marked tracks to the SD card root."""
+    from src.favorites import write_playlist
+
+    output_dir = output_dir.resolve()
+    sd_root = (sd_root or output_dir).resolve()
+    manifest = Manifest(output_dir / MANIFEST_NAME)
+    favs = manifest.favorites(fmt=fmt)
+    if not favs:
+        click.echo(f"No favorites recorded for format '{fmt}'. "
+                   "Mark tracks via the GUI's Library tab first.")
+        return
+    tracks = [Path(e.target) for e in favs]
+    written = write_playlist(sd_root, tracks, name=name)
+    click.echo(f"Wrote {len(tracks)} tracks to {written}.")
+    skipped = sum(1 for t in tracks if sd_root not in t.resolve().parents)
+    if skipped:
+        click.echo(f"  ({skipped} tracks live outside --sd-root and were skipped.)",
+                   err=True)
+
+
+@favorites.command("pull")
+@click.option("--sd-root", type=click.Path(exists=True, file_okay=False, path_type=Path),
+              required=True, help="Mounted SD card root.")
+def favorites_pull(sd_root):
+    """Best-effort: list what the Echo considers favorited on the SD card."""
+    from src.favorites import read_device_favorites
+
+    tracks = read_device_favorites(sd_root.resolve())
+    if not tracks:
+        click.echo("No favorites found on the SD card. The Echo may keep them in "
+                   "internal flash only; use `favorites push` to seed an M3U.")
+        return
+    click.echo(f"Found {len(tracks)} favorite tracks:")
+    for t in tracks:
+        click.echo(f"  {t}")
+
+
 if __name__ == "__main__":
     cli()
