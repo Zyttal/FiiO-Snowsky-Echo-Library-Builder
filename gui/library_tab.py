@@ -36,8 +36,12 @@ class LibraryTab(QWidget):
     COL_NAME = 0
     COL_FAV = 1
     COL_GENRE = 2
-    COL_BITRATE = 3
-    COL_PLAYLISTS = 4
+    COL_YEAR = 3
+    COL_FORMAT = 4
+    COL_BITRATE = 5
+    COL_DURATION = 6
+    COL_PLAYLISTS = 7
+    COLUMN_COUNT = 8
 
     def __init__(self) -> None:
         super().__init__()
@@ -96,15 +100,17 @@ class LibraryTab(QWidget):
         outer.addWidget(self.progress)
 
         self.tree = QTreeWidget()
-        self.tree.setColumnCount(5)
-        self.tree.setHeaderLabels(
-            ["Artist / Album / Track", "Favorite", "Genre", "Bitrate", "Playlists"]
-        )
-        self.tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        self.tree.header().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        self.tree.header().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        self.tree.header().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
-        self.tree.header().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        self.tree.setColumnCount(self.COLUMN_COUNT)
+        self.tree.setHeaderLabels([
+            "Artist / Album / Track", "Favorite", "Genre", "Year",
+            "Format", "Bitrate", "Duration", "Playlists",
+        ])
+        self.tree.header().setSectionResizeMode(self.COL_NAME, QHeaderView.ResizeMode.Stretch)
+        for col in (self.COL_FAV, self.COL_GENRE, self.COL_YEAR,
+                    self.COL_FORMAT, self.COL_BITRATE, self.COL_DURATION,
+                    self.COL_PLAYLISTS):
+            self.tree.header().setSectionResizeMode(
+                col, QHeaderView.ResizeMode.ResizeToContents)
         self.tree.itemChanged.connect(self._on_item_changed)
         self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.tree.customContextMenuRequested.connect(self._on_context_menu)
@@ -205,7 +211,7 @@ class LibraryTab(QWidget):
 
         artist_item = self._artists.get(artist)
         if artist_item is None:
-            artist_item = QTreeWidgetItem([artist, "", "", "", ""])
+            artist_item = QTreeWidgetItem([artist] + [""] * (self.COLUMN_COUNT - 1))
             self.tree.addTopLevelItem(artist_item)
             self._artists[artist] = artist_item
             artist_item.setExpanded(True)
@@ -216,7 +222,7 @@ class LibraryTab(QWidget):
         album_key = (artist, album)
         album_item = self._albums.get(album_key)
         if album_item is None:
-            album_item = QTreeWidgetItem([album, "", "", "", ""])
+            album_item = QTreeWidgetItem([album] + [""] * (self.COLUMN_COUNT - 1))
             artist_item.addChild(album_item)
             self._albums[album_key] = album_item
             album_item.setData(0, Qt.ItemDataRole.UserRole + 1,
@@ -227,7 +233,10 @@ class LibraryTab(QWidget):
             payload["filename"],
             "",
             payload["genre"],
+            payload.get("year", ""),
+            payload.get("format", ""),
             payload["bitrate"],
+            payload.get("duration", ""),
             playlists_str,
         ])
         track_item.setCheckState(

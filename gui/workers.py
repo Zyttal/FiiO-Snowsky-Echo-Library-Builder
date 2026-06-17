@@ -265,15 +265,30 @@ class LibraryScanRunner(QRunnable):
                     continue
                 artist, album = parts[0], parts[1]
 
-                genre, bitrate = "", ""
+                genre = year = bitrate = fmt = duration = ""
                 try:
                     flac = FLAC(p)
                     if flac.tags:
                         gv = flac.tags.get("GENRE")
                         if gv:
                             genre = gv[0]
+                        dv = flac.tags.get("DATE") or flac.tags.get("YEAR")
+                        if dv:
+                            # DATE can be YYYY-MM-DD; we only want YYYY
+                            year = str(dv[0])[:4]
                     try:
                         bitrate = f"{flac.info.bitrate / 1000:.0f} kbps"
+                    except Exception:
+                        pass
+                    try:
+                        bd = flac.info.bits_per_sample
+                        sr = flac.info.sample_rate / 1000
+                        fmt = f"{bd}-bit / {sr:g} kHz"
+                    except Exception:
+                        pass
+                    try:
+                        total = int(flac.info.length)
+                        duration = f"{total // 60}:{total % 60:02d}"
                     except Exception:
                         pass
                 except Exception:
@@ -288,7 +303,10 @@ class LibraryScanRunner(QRunnable):
                     "artist": artist,
                     "album": album,
                     "genre": genre,
+                    "year": year,
                     "bitrate": bitrate,
+                    "format": fmt,
+                    "duration": duration,
                     "favorite": fav,
                     "playlists": list(playlists),
                 })
