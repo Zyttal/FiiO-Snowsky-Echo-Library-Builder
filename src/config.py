@@ -25,6 +25,8 @@ class Config:
     forbidden_chars: str = '"<>:|?*/\\'
     ampersand_replacement: str = "and"
     workers: int | None = None
+    default_genre: str | None = None
+    enrich_tags_via_musicbrainz: bool = False
 
     def resolved_workers(self) -> int:
         if self.workers is not None:

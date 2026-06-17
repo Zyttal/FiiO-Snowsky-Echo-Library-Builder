@@ -130,15 +130,100 @@ It only processes the new files — the existing 390 are recognized as up-to-dat
 | Only process one album | add `--only "Undertow"` (substring match on folder name) |
 | Make a smaller MP3 mirror alongside the FLAC tree | add `--mirror mp3` — produces `Echo-Library-MP3/` next to `Echo-Library/` |
 | Use MP3 instead of FLAC as the primary | add `--format mp3` |
+| Export favorites as Favorites.m3u on the SD card | `pyenv exec python build_library.py favorites push --output ... --sd-root /media/$USER/ECHO/` (backup-only — FiiO has stated the Echo's chip can't play M3U) |
+| Scan SD card for previously-exported .m3u files | `pyenv exec python build_library.py favorites pull --sd-root /media/$USER/ECHO/` (the Echo has no MTP mode, so its internal Favorites list can't be read from the host — this only finds files we've already exported) |
+| Add tracks to a playlist | `pyenv exec python build_library.py playlist add --output ... --name Workout --track <path> [--track <path>...]` |
+| Push playlists to the SD card as folders | `pyenv exec python build_library.py playlist push --output ... --sd-root /media/$USER/ECHO/` |
+| Download a song list from YouTube | `pyenv exec python build_library.py download --list songs.txt --dest /mnt/games/Music/` |
+| Launch the desktop GUI instead | `pyenv exec python -m gui` |
 | Run the tests | `pyenv exec python -m pytest tests/ -v` |
+
+## Downloading songs by name (YouTube → MusicBrainz → source tree)
+
+If you want the tool to fetch new tracks for you rather than only re-package what you've already ripped, write a song list and feed it to the `download` command. Each line is one song. The 3-field form pins the album, which makes MusicBrainz lookups much more accurate:
+
+```
+# /mnt/games/Music/wishlist.txt
+Pink Floyd - The Dark Side of the Moon - Time
+TOOL - Ænima - Stinkfist
+Radiohead - Karma Police
+```
+
+Then:
+
+```bash
+pyenv exec python build_library.py download \
+    --list /mnt/games/Music/wishlist.txt \
+    --dest /mnt/games/Music/
+```
+
+What happens for each line:
+
+1. **MusicBrainz lookup** finds the album, year, genre, track and disc number, album artist, and a cover-art URL.
+2. **YouTube search** picks the first result whose duration matches the MusicBrainz duration within ±20 % (rejects "live cover" mistakes).
+3. **yt-dlp + ffmpeg** download the audio and encode it to FLAC.
+4. **Tags + cover.jpg** land alongside the file via the same tag-writer the rest of the pipeline uses — clean Vorbis comments only, no ID3-in-FLAC.
+5. **Files appear** at `<dest>/<Album> - <Artist>/NN - Title.flac` matching your existing folder convention.
+
+After it finishes, re-run the `build` step from earlier and the new tracks flow straight into your Echo-Library tree.
+
+The GUI exposes the same flow under the **Download** tab.
+
+**Heads up**: downloading commercial audio from YouTube is against their ToS and the legality varies by jurisdiction. This is a personal-library tool — how you use it is on you.
+
+## Launching the GUI
+
+If you'd rather drive everything from a window instead of the terminal:
+
+```bash
+pyenv exec python -m gui
+```
+
+One-time system dependency on Linux — PySide6 6.5+ needs an xcb cursor
+helper that isn't pulled in by Qt or apt automatically:
+
+```bash
+sudo apt install libxcb-cursor0
+```
+
+If you see `Could not load the Qt platform plugin "xcb"`, that's the missing package. As a fallback on a Wayland session you can also run `QT_QPA_PLATFORM=wayland pyenv exec python -m gui` without sudo.
+
+A single-window app opens with five tabs:
+
+- **Download** — point at a song list and a destination, watch each row enrich (MusicBrainz) and fetch (yt-dlp) live. Falls through to the Build tab when finished.
+- **Build** — same options as the CLI's `build` command, plus a live per-file progress table. Dry-run first if you want a preview. The Format dropdown's new `preserve` choice keeps each source format when the Echo can play it natively (MP3/M4A/OGG copy as-is, FLAC ≤16/96 copies as-is, FLAC >16-bit or >96 kHz downconverts to 16/44.1, WAV becomes FLAC). The "Look up missing tags via MusicBrainz" checkbox runs an enrichment phase before the conversion phase — fills in GENRE, DATE, ALBUMARTIST on every source track that lacked them. ~1 second per missing track (MB rate limit), runs on a background thread so the GUI stays responsive.
+- **Library** — tree view of the output. Click the star column to mark a track favorite, right-click for "Add to playlist" / "Delete track" / "Delete album" / "Delete artist". The destructive actions delete on disk under whatever folder you've loaded, never the Echo's internal flash. The red "Empty library…" button at the top wipes every artist folder under the loaded root, two-step confirmation, preserves the manifest + FiiO info files + any Playlists/ folder. Useful for clearing the SD card before a fresh push.
+- **Playlists** — manage playlist membership (left pane: playlists, right pane: tracks). One-click "Push to card" copies tracks to `<SD>/Playlists/<Name>/` for folder-as-playlist playback on the Echo. Songs can be in multiple playlists at once (separate copies on the card).
+- **Device** — point at the SD card, export your favorites as `Favorites.m3u`, or try to pull what's on the card (best-effort — FiiO doesn't publish the format).
+
+The GUI reuses the same job pipeline as the CLI — no behavior differences, just a friendlier surface.
+
+## Standalone installers (for people without Python)
+
+If you want to hand this to someone who isn't going to set up pyenv:
+
+```bash
+# Linux (produces an AppImage in dist/)
+packaging/build_linux.sh
+
+# macOS (produces a .dmg in dist/)
+packaging/build_macos.sh
+
+# Windows (run in PowerShell; produces echo-library-builder.exe in dist\)
+.\packaging\build_windows.ps1
+```
+
+Each script bundles a static ffmpeg, so end-users don't need to install anything else. Build artifacts live in `dist/` and aren't committed. The macOS `.app` is unsigned — first-time users must right-click → Open to bypass Gatekeeper.
 
 ## If something goes wrong
 
 | Symptom | Try this |
 | --- | --- |
 | `ffmpeg not found` | `sudo apt install ffmpeg` |
+| `Could not load the Qt platform plugin "xcb"` when launching the GUI | `sudo apt install libxcb-cursor0` (PySide6 6.5+ runtime dep) |
 | Conversion fails on one file | usually a corrupt source — run `ffprobe <file>` to inspect |
 | Tracks still skip on the Echo after copying | run `verify` first; if clean, check the SD card filesystem (NTFS won't work) |
 | Library scan on the Echo takes forever | keep per-card file count under ~5000 |
+| Downloader picks a compilation, not the studio album | use the 3-field `Artist - Album - Title` form in your song list |
 
 That's the whole workflow — `cd`, build, verify, rsync, enjoy.

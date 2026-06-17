@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from mutagen.flac import FLAC, Picture
-from mutagen.id3 import APIC, ID3, TALB, TDRC, TIT2, TPE1, TPE2, TPOS, TRCK
+from mutagen.id3 import APIC, ID3, TALB, TCON, TDRC, TIT2, TPE1, TPE2, TPOS, TRCK
 from mutagen.mp3 import MP3
 
 # Common filename patterns we fall back to when tags are missing.
@@ -68,22 +68,74 @@ def from_filename(path: Path) -> tuple[int | None, str | None, str | None]:
 
 
 def read_source(path: Path, fallback_album: str, disc_hint: int | None) -> SourceTags:
-    """Read tags from a FLAC; backfill missing values from the filename."""
-    f = FLAC(path)
-    t = f.tags or {}
-    fn_n, fn_artist, fn_title = from_filename(path)
+    """Read tags from any mutagen-recognised audio file (FLAC, MP3, M4A,
+    OGG, APE, WAV) and backfill missing values from the filename.
 
+    Different formats use different key cases and tag layers; we normalise
+    by trying both Vorbis-style ("ARTIST"/"artist") and ID3 frame IDs
+    ("TPE1") for each field. mutagen.File() auto-detects the format.
+    """
+    import mutagen
+    try:
+        f = mutagen.File(path)
+    except Exception:
+        f = None
+    if f is None or f.tags is None:
+        t = _PseudoTags({})
+    else:
+        t = _normalise_tags(f.tags)
+
+    fn_n, fn_artist, fn_title = from_filename(path)
+    # Three tag schemes to cover: Vorbis (FLAC/OGG, case varies),
+    # ID3 frames (MP3), and Apple atoms (M4A — '©' is the iTunes prefix
+    # for standard metadata atoms).
     out = SourceTags(
-        artist=_first(t, "artist", "ARTIST") or fn_artist or "Unknown Artist",
-        album=_first(t, "album", "ALBUM") or fallback_album,
-        title=_first(t, "title", "TITLE") or fn_title or path.stem,
-        track_no=_track_int(_first(t, "tracknumber", "TRACKNUMBER")) or fn_n,
-        disc_no=_track_int(_first(t, "discnumber", "DISCNUMBER")) or disc_hint,
-        date=_first(t, "date", "DATE", "year", "YEAR"),
-        genre=_first(t, "genre", "GENRE"),
-        album_artist=_first(t, "albumartist", "ALBUMARTIST", "album artist"),
+        artist=_first(t, "artist", "ARTIST", "TPE1", "\xa9ART")
+               or fn_artist or "Unknown Artist",
+        album=_first(t, "album", "ALBUM", "TALB", "\xa9alb")
+              or fallback_album,
+        title=_first(t, "title", "TITLE", "TIT2", "\xa9nam")
+              or fn_title or path.stem,
+        track_no=_track_int(_first(t, "tracknumber", "TRACKNUMBER", "TRCK", "trkn")) or fn_n,
+        disc_no=_track_int(_first(t, "discnumber", "DISCNUMBER", "TPOS", "disk")) or disc_hint,
+        date=_first(t, "date", "DATE", "year", "YEAR", "TDRC", "\xa9day"),
+        genre=_first(t, "genre", "GENRE", "TCON", "\xa9gen"),
+        album_artist=_first(t, "albumartist", "ALBUMARTIST", "album artist",
+                            "TPE2", "aART"),
     )
     return out
+
+
+class _PseudoTags(dict):
+    """Dict-with-a-get that mutagen.File() returns are sometimes typed
+    as — keeps _first() happy."""
+
+
+def _normalise_tags(raw) -> _PseudoTags:
+    """Turn whatever mutagen returns into a flat dict whose `get(key)`
+    returns a string or list of strings. Handles Vorbis comments, ID3
+    frames, MP4 atoms (including (N, total) tuples for trkn/disk), and
+    APEv2 — all of which expose slightly different surfaces."""
+    if hasattr(raw, "items"):
+        out: dict = {}
+        for k, v in raw.items():
+            if hasattr(v, "text"):
+                # ID3 frame: TPE1, TALB, etc. → .text is a list of strings
+                val = list(v.text) if v.text else []
+            elif isinstance(v, (list, tuple)):
+                val = []
+                for x in v:
+                    if isinstance(x, (list, tuple)) and x:
+                        # MP4 trkn/disk: take the leading number, drop
+                        # the (optional) "of total".
+                        val.append(str(x[0]))
+                    else:
+                        val.append(str(x))
+            else:
+                val = [str(v)]
+            out[k] = val
+        return _PseudoTags(out)
+    return _PseudoTags({})
 
 
 def write_flac(target: Path, tags: SourceTags, picture_bytes: bytes | None) -> None:
@@ -128,7 +180,10 @@ def write_mp3(target: Path, tags: SourceTags, picture_bytes: bytes | None) -> No
     audio = MP3(target, ID3=ID3)
     if audio.tags is None:
         audio.add_tags()
-    audio.tags.delete()
+    # Clear in-memory frames (e.g. the ffmpeg-written TSSE). Don't call
+    # tags.delete() — in mutagen >=1.46 it requires a filename arg and the
+    # bare call raises 'Missing filename or fileobj argument'.
+    audio.tags.clear()
     audio.tags.add(TPE1(encoding=3, text=tags.artist))
     audio.tags.add(TALB(encoding=3, text=tags.album))
     audio.tags.add(TIT2(encoding=3, text=tags.title))
@@ -140,6 +195,8 @@ def write_mp3(target: Path, tags: SourceTags, picture_bytes: bytes | None) -> No
         audio.tags.add(TPE2(encoding=3, text=tags.album_artist))
     if tags.date:
         audio.tags.add(TDRC(encoding=3, text=tags.date))
+    if tags.genre:
+        audio.tags.add(TCON(encoding=3, text=tags.genre))
     if picture_bytes:
         audio.tags.add(
             APIC(encoding=3, mime="image/jpeg", type=3, desc="Cover", data=picture_bytes)
@@ -147,3 +204,89 @@ def write_mp3(target: Path, tags: SourceTags, picture_bytes: bytes | None) -> No
     # v2.3 for max compatibility on small DAPs
     audio.tags.update_to_v23()
     audio.save(v2_version=3)
+
+
+def write_m4a(target: Path, tags: SourceTags, picture_bytes: bytes | None) -> None:
+    """Write iTunes-style metadata atoms on an M4A/MP4 file."""
+    from mutagen.mp4 import MP4, MP4Cover
+    audio = MP4(target)
+    if audio.tags is None:
+        audio.add_tags()
+    audio.tags.clear()
+    audio.tags["\xa9ART"] = tags.artist
+    audio.tags["\xa9alb"] = tags.album
+    audio.tags["\xa9nam"] = tags.title
+    if tags.track_no is not None:
+        audio.tags["trkn"] = [(int(tags.track_no), 0)]
+    if tags.disc_no is not None:
+        audio.tags["disk"] = [(int(tags.disc_no), 0)]
+    if tags.date:
+        audio.tags["\xa9day"] = tags.date
+    if tags.genre:
+        audio.tags["\xa9gen"] = tags.genre
+    if tags.album_artist:
+        audio.tags["aART"] = tags.album_artist
+    if picture_bytes:
+        audio.tags["covr"] = [
+            MP4Cover(picture_bytes, imageformat=MP4Cover.FORMAT_JPEG),
+        ]
+    audio.save()
+
+
+def write_ogg(target: Path, tags: SourceTags, picture_bytes: bytes | None) -> None:
+    """Write Vorbis comments on an OGG Vorbis file. Cover art uses the
+    same METADATA_BLOCK_PICTURE convention as FLAC, base64-encoded."""
+    import base64
+    from mutagen.oggvorbis import OggVorbis
+    audio = OggVorbis(target)
+    if audio.tags is None:
+        audio.add_tags()
+    audio.tags.clear()
+    audio.tags["ARTIST"] = tags.artist
+    audio.tags["ALBUM"] = tags.album
+    audio.tags["TITLE"] = tags.title
+    if tags.track_no is not None:
+        audio.tags["TRACKNUMBER"] = str(tags.track_no)
+    if tags.disc_no is not None:
+        audio.tags["DISCNUMBER"] = str(tags.disc_no)
+    if tags.date:
+        audio.tags["DATE"] = tags.date
+    if tags.genre:
+        audio.tags["GENRE"] = tags.genre
+    if tags.album_artist:
+        audio.tags["ALBUMARTIST"] = tags.album_artist
+    if picture_bytes:
+        pic = Picture()
+        pic.type = 3
+        pic.mime = "image/jpeg"
+        pic.desc = "Cover"
+        pic.data = picture_bytes
+        audio.tags["METADATA_BLOCK_PICTURE"] = [
+            base64.b64encode(pic.write()).decode("ascii"),
+        ]
+    audio.save()
+
+
+# Format → writer dispatch. Used by the preserve build path to retag
+# whatever ffmpeg or shutil dropped on disk.
+_WRITERS = {
+    "flac": write_flac,
+    "mp3": write_mp3,
+    "m4a": write_m4a,
+    "mp4": write_m4a,
+    "ogg": write_ogg,
+}
+
+
+def write_tags(target: Path, tags: SourceTags,
+               picture_bytes: bytes | None) -> bool:
+    """Dispatch to the right tag writer based on the target's extension.
+    Returns True if a writer was found and ran, False if we don't have
+    one for this format (DSF, APE, WAV — caller can decide whether to
+    silently skip or raise)."""
+    ext = target.suffix.lower().lstrip(".")
+    writer = _WRITERS.get(ext)
+    if writer is None:
+        return False
+    writer(target, tags, picture_bytes)
+    return True

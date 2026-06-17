@@ -42,36 +42,73 @@ def _find_cover(folder: Path) -> Path | None:
 def discover(source_root: Path, only: str | None = None) -> list[WorkItem]:
     """Find all audio files under source_root.
 
-    Recognizes nested Disc N/ subfolders as the same album, recording disc_no.
-    Cover art is taken from the album folder (one level above Disc N) when
+    Two modes, auto-detected:
+
+    1. **Library mode** (default): source_root holds multiple album
+       folders. Iterate each top-level subdirectory as a separate album.
+    2. **Single-album mode**: source_root *is* the album folder — it
+       contains Disc N/ subdirs OR audio files directly. Treat
+       source_root itself as the album. This is what happens when the
+       GUI's Source field is pointed at one specific folder, e.g. a
+       multi-disc compilation. Without this branch, the per-disc subdirs
+       would each be misread as separate albums.
+
+    Recognizes nested Disc N/ subfolders as one album, recording disc_no.
+    Cover art comes from the album folder (one level above Disc N) when
     present; otherwise from the Disc folder itself.
 
-    `only` is a case-insensitive substring match against the album folder name.
+    `only` is a case-insensitive substring match against the album
+    folder name. In single-album mode it filters against source_root's
+    own name.
     """
     items: list[WorkItem] = []
     source_root = source_root.resolve()
 
+    direct_disc_dirs = [
+        d for d in source_root.iterdir()
+        if d.is_dir() and _disc_from_dirname(d.name)
+    ]
+    direct_audio_files = [
+        f for f in source_root.iterdir()
+        if f.is_file() and f.suffix.lower() in _AUDIO_EXTS
+    ]
+    if direct_disc_dirs or direct_audio_files:
+        # Single-album mode: source_root is the album folder.
+        if only and only.lower() not in source_root.name.lower():
+            return items
+        _scan_album(source_root, items)
+        return items
+
+    # Library mode: iterate top-level subdirs as album folders.
     for top in sorted(p for p in source_root.iterdir() if p.is_dir()):
-        # The output should never include the output dir itself if it's a sibling
+        # The output should never include the output dir itself if it's
+        # a sibling.
         if top.name.startswith("Echo-Library"):
             continue
         if only and only.lower() not in top.name.lower():
             continue
-
-        # Scan disc subdirs and direct children
-        album_cover = _find_cover(top)
-        disc_dirs = [d for d in top.iterdir() if d.is_dir() and _disc_from_dirname(d.name)]
-
-        if disc_dirs:
-            for disc_dir in sorted(disc_dirs, key=lambda d: _disc_from_dirname(d.name) or 0):
-                dno = _disc_from_dirname(disc_dir.name)
-                cover = album_cover or _find_cover(disc_dir)
-                for f in sorted(disc_dir.iterdir()):
-                    if f.is_file() and f.suffix.lower() in _AUDIO_EXTS:
-                        items.append(WorkItem(f, top, dno, cover))
-        else:
-            for f in sorted(top.iterdir()):
-                if f.is_file() and f.suffix.lower() in _AUDIO_EXTS:
-                    items.append(WorkItem(f, top, None, album_cover))
+        _scan_album(top, items)
 
     return items
+
+
+def _scan_album(album_dir: Path, items: list[WorkItem]) -> None:
+    """Append every audio file under `album_dir` to `items`, detecting
+    Disc N/ subfolders for disc_no tagging."""
+    album_cover = _find_cover(album_dir)
+    disc_dirs = [
+        d for d in album_dir.iterdir()
+        if d.is_dir() and _disc_from_dirname(d.name)
+    ]
+    if disc_dirs:
+        for disc_dir in sorted(disc_dirs,
+                               key=lambda d: _disc_from_dirname(d.name) or 0):
+            dno = _disc_from_dirname(disc_dir.name)
+            cover = album_cover or _find_cover(disc_dir)
+            for f in sorted(disc_dir.iterdir()):
+                if f.is_file() and f.suffix.lower() in _AUDIO_EXTS:
+                    items.append(WorkItem(f, album_dir, dno, cover))
+    else:
+        for f in sorted(album_dir.iterdir()):
+            if f.is_file() and f.suffix.lower() in _AUDIO_EXTS:
+                items.append(WorkItem(f, album_dir, None, album_cover))

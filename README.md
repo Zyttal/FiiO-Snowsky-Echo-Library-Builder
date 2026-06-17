@@ -22,6 +22,8 @@ files fail to play. The known culprits — none documented in the manual — are
 | Nested `Disc 1/Disc 2/` folders | Device sorts by folder then filename — not by DISCNUMBER tag — so order breaks | Flattens to `Album (Disc 1)/`, `Album (Disc 2)/` |
 | Track number as `3/12` | Some firmware versions display it literally | Writes bare `TRACKNUMBER=3` |
 | 24-bit / high-sample-rate FLAC | EQ silently disables above 16-bit | Downconverts to 16-bit / 44.1 kHz by default |
+| Source FLACs missing the GENRE tag | Echo shows "Unknown" for every track | Optional `default_genre` config fallback fills in a value when the source has none |
+| Favorites kept only in internal storage; firmware updates may reformat it (per FiiO's install instructions) | Curating risks loss whenever you flash a new firmware | `Favorites.m3u` push exports the curated list as a CRLF M3U backup at the SD card root — FiiO has stated the Echo's chip can't play M3U, so the file is for archival/restore, not on-device playback |
 
 Everything is configurable; the defaults match what the device prefers.
 
@@ -124,6 +126,157 @@ track title and sequential numbering per disc:
 Without the flag, the tool disperses tracks to their tagged ARTIST folders
 (useful if you want artist-based browsing on the Echo).
 
+### Download (YouTube → MusicBrainz → source tree)
+
+Hand the tool a text file of songs and it will fetch each from YouTube,
+look up canonical metadata on MusicBrainz, re-encode as FLAC with clean
+Vorbis tags and embedded cover art, and land it in your source library so
+the next `build` picks it up.
+
+```bash
+./build_library.py download --list songs.txt --dest /mnt/games/Music/
+```
+
+Input format — one song per line. The 3-field form pins the album, which
+materially improves MusicBrainz matches for popular tracks (which often
+appear on dozens of compilations):
+
+```
+# echo-library-builder/songs.txt
+Pink Floyd - The Dark Side of the Moon - Time
+The Beatles - Help! - Yesterday
+TOOL - Ænima - Stinkfist
+Radiohead - Karma Police
+```
+
+The downloader uses the existing `default_genre` config as a fallback
+when MusicBrainz has no genre tag for the recording, so the Echo never
+sees "Unknown" for downloaded tracks.
+
+**Copyright note**: downloading commercial audio from YouTube is against
+their ToS and the legality varies by jurisdiction. This tool exists for
+personal-library use on the user's own device; how you use it is on you.
+
+### Playlists (folder-as-playlist)
+
+The Echo can't play M3U (chip limit), but its Folder browse mode shows any
+directory of audio as a playable group. So a "playlist" is a physical folder
+at `<SD>/Playlists/<Name>/` holding sequentially-numbered copies of every
+member track. The Echo's folder view sees `Workout`, `Chill`, etc. as
+navigable groups.
+
+```bash
+# Add tracks to a playlist (operates on the manifest)
+./build_library.py playlist add --output /mnt/games/Music/Echo-Library \
+    --name Workout \
+    --track "/mnt/games/Music/Echo-Library/TOOL/Ænima/01 - Stinkfist.flac" \
+    --track "/mnt/games/Music/Echo-Library/TOOL/Ænima/02 - Eulogy.flac"
+
+# List playlists / contents
+./build_library.py playlist list --output /mnt/games/Music/Echo-Library
+./build_library.py playlist list --output /mnt/games/Music/Echo-Library --name Workout
+
+# Push to the SD card (one playlist or all of them)
+./build_library.py playlist push --output ... --sd-root /media/$USER/ECHO/ --name Workout
+./build_library.py playlist push --output ... --sd-root /media/$USER/ECHO/
+```
+
+The GUI has a dedicated **Playlists** tab plus a right-click "Add to
+playlist…" on every track in the **Library** tab.
+
+**A song can be in multiple playlists.** FAT32 and exFAT have no hardlinks
+or symlinks, so each membership is a physical file copy on the card. Disk
+overhead is small in practice: a 30-track playlist is ~150 MB, trivial on
+a 256 GB card.
+
+`push` is incremental — tracks already on the card with the same mtime/size
+are skipped, stale tracks get pruned. The first track's `cover.jpg` is
+dropped into the playlist folder so the Echo's folder view shows artwork.
+
+### Favorites
+
+The Echo's on-device "Add to Favorites" list lives in internal flash. **It
+cannot be read from the host computer** — the Echo only offers USB Mass
+Storage mode (no MTP), and Mass Storage exposes only the SD card. Internal
+flash is invisible. So this tool cannot pull what the device thinks is
+favorited; it can only manage favorites you mark on the host side and
+export them as a backup the device's chip happens not to be able to play
+(see below).
+
+Loss surface for on-device Favorites:
+
+- Firmware V1.3.0 (April 2026) fixed a bug where routine media-library
+  re-scans cleared the list. On V1.3.0+ library refreshes are safe.
+- Firmware *flashes* still reformat internal storage per FiiO's install
+  notes ("the firmware upgrade may first format the internal memory"),
+  so the list is at risk every time you update FW.
+
+This tool's `favorites push` writes a CRLF M3U at the SD card root from
+manifest-marked favorites. Because the Echo's chip can't play M3U, this
+.m3u is purely a backup — restore by hand after a firmware flash, or
+read it on any phone/PC player that grokks M3U:
+
+```bash
+# Push manifest favorites to <SD card>/Favorites.m3u
+./build_library.py favorites push --output /mnt/games/Music/Echo-Library \
+    --sd-root /media/$USER/ECHO/
+
+# Best-effort: read favorites back off the card (probes hidden FiiO dirs,
+# SQLite, plain playlists). Returns nothing if favorites are flash-only.
+./build_library.py favorites pull --sd-root /media/$USER/ECHO/
+```
+
+**M3U playback isn't coming.** FiiO has stated publicly (Head-Fi / Reddit
+threads, as of mid-2026) that the Echo line's chip can't support M3U
+playlists — it's a hardware limitation, not a firmware feature waiting to
+ship. So the `Favorites.m3u` we write is purely a **backup format**: a
+standard CRLF playlist with relative paths, useful for:
+
+- Restoring your curated list manually after a firmware update wipes the
+  on-device favorites.
+- Importing into a media player on a phone or PC that *does* read M3U.
+- Migrating to a different DAP later without losing your selections.
+
+The device itself won't surface it as a playable playlist. If you want
+something that does play on the Echo, you'd need to physically reorganise
+files into a "Favorites" folder — that's a different feature (call it a
+"playlist as folder" mode) and not built here yet.
+
+### GUI
+
+A PySide6 desktop GUI ships in `gui/`. Same job pipeline as the CLI, three
+tabs (Build / Library / Device).
+
+```bash
+pyenv exec python -m gui
+```
+
+For non-Python users, build a standalone installer per OS:
+
+```bash
+packaging/build_linux.sh        # AppImage in dist/
+packaging/build_macos.sh        # .dmg in dist/
+./packaging/build_windows.ps1   # .exe in dist\ (PowerShell)
+```
+
+Each bundles a static ffmpeg so end-users don't need to install anything.
+The macOS `.app` is unsigned; first-time users must right-click → Open.
+
+### Cutting a release
+
+The release workflow at `.github/workflows/release.yml` builds the three
+installers on native runners and attaches them to a GitHub Release when
+a `v*.*.*` tag is pushed.
+
+```bash
+# Update CHANGELOG.md with the v0.2.0 section first
+git tag v0.2.0
+git push origin v0.2.0
+```
+
+The release body is auto-filled from the matching section in
+`CHANGELOG.md`; if no entry exists for the tag, a placeholder is used.
+
 ### Tests
 
 ```bash
@@ -199,15 +352,34 @@ echo-library-builder/
 ├── requirements.txt
 ├── config.yaml
 ├── build_library.py        # CLI
-└── src/
-    ├── config.py           # defaults + YAML loading
-    ├── scan.py             # source-tree walker, disc detection
-    ├── tags.py             # mutagen: read/write Vorbis + ID3v2.3
-    ├── convert.py          # ffmpeg strategies (FLAC / MP3 / DSD)
-    ├── cover.py            # Pillow: resize cover.jpg, in-memory cache
-    ├── layout.py           # compute Artist/Album/NN - Title.flac
-    ├── sanitize.py         # filename-safe transforms
-    └── manifest.py         # JSON manifest for incremental re-runs
+├── src/
+│   ├── config.py           # defaults + YAML loading
+│   ├── scan.py             # source-tree walker, disc detection
+│   ├── tags.py             # mutagen: read/write Vorbis + ID3v2.3
+│   ├── convert.py          # ffmpeg strategies (FLAC / MP3 / DSD)
+│   ├── cover.py            # Pillow: resize cover.jpg, in-memory cache
+│   ├── layout.py           # compute Artist/Album/NN - Title.flac
+│   ├── sanitize.py         # filename-safe transforms
+│   ├── favorites.py        # M3U write + best-effort device probe
+│   ├── song_list.py        # parse the downloader's input file
+│   ├── musicbrainz.py      # canonical tag enrichment
+│   ├── downloader.py       # yt-dlp + MB + tag write, all in one
+│   ├── playlist.py         # folder-as-playlist push + incremental sync
+│   └── manifest.py         # JSON manifest for incremental re-runs
+├── gui/                    # PySide6 desktop GUI (python -m gui)
+│   ├── main.py             # QApplication + tabbed main window
+│   ├── download_tab.py     # song-list picker + per-song status
+│   ├── build_tab.py        # source/output pickers + per-file progress
+│   ├── library_tab.py      # tree view + favorite/playlist columns + delete actions
+│   ├── playlists_tab.py    # manage playlist membership + push to card
+│   ├── device_tab.py       # SD card picker + push/pull favorites
+│   ├── workers.py          # QRunnable wrapper around the CLI's job pipeline
+│   └── ffmpeg_probe.py     # locate bundled or system ffmpeg
+└── packaging/              # one-shot installer builds per OS
+    ├── pyinstaller.spec
+    ├── build_linux.sh      # → dist/echo-library-builder-x86_64.AppImage
+    ├── build_macos.sh      # → dist/echo-library-builder.dmg
+    └── build_windows.ps1   # → dist\echo-library-builder.exe
 ```
 
 ## Troubleshooting
