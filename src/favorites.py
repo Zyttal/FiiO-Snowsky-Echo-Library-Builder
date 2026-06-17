@@ -69,22 +69,33 @@ def write_playlist(
     sd_root: Path,
     tracks: list[Path],
     name: str = PLAYLIST_NAME,
+    lib_root: Path | None = None,
 ) -> Path:
-    """Write a CRLF M3U at the SD card root. Paths are written relative to
-    `sd_root`, with forward slashes. Raises EmptyPlaylistError if none of
-    the supplied tracks live under sd_root — writing a header-only M3U is
-    a common UX trap (Pull then claims "no favorites found")."""
+    """Write a CRLF M3U at the SD card root.
+
+    Paths in the playlist are written relative to `lib_root` — the local
+    Echo-Library tree, where the manifest's `target` paths actually live.
+    The SD card is assumed to be an rsync mirror of `lib_root`, so those
+    same relative paths resolve on the device.
+
+    When `lib_root` is None we fall back to `sd_root` for backwards
+    compatibility (single-machine case where the library is on the card).
+
+    Raises EmptyPlaylistError if none of the supplied tracks live under
+    `lib_root` — writing a header-only M3U is a common UX trap that
+    makes the read side claim 'no favorites found'."""
     sd_root = sd_root.resolve()
+    lib_root = (lib_root or sd_root).resolve()
     playlist_path = sd_root / name
     lines = ["#EXTM3U"]
     skipped = 0
     for track in tracks:
         track = track.resolve()
         try:
-            rel = track.relative_to(sd_root)
+            rel = track.relative_to(lib_root)
         except ValueError:
-            # Track lives outside the SD card root — skip rather than write
-            # an absolute path that won't resolve on the device.
+            # Track lives outside the local library root — skip rather
+            # than write an absolute path that won't resolve on the device.
             skipped += 1
             continue
         lines.append(str(rel).replace("\\", "/"))

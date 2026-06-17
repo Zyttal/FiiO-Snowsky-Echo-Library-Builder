@@ -31,10 +31,25 @@ class DeviceTab(QWidget):
     def _build_layout(self) -> None:
         outer = QVBoxLayout(self)
 
-        # SD card row
+        # Library row first — it's the canonical source of favorites/manifest.
+        row2 = QHBoxLayout()
+        self.lib_edit = QLineEdit()
+        self.lib_edit.setPlaceholderText(
+            "Local Echo-Library root (where build wrote, contains the manifest)…"
+        )
+        lib_browse = QPushButton("Browse…")
+        lib_browse.clicked.connect(self._pick_lib)
+        row2.addWidget(QLabel("Local library:"))
+        row2.addWidget(self.lib_edit)
+        row2.addWidget(lib_browse)
+        outer.addLayout(row2)
+
+        # SD card row — where the .m3u backup gets written.
         row = QHBoxLayout()
         self.sd_edit = QLineEdit()
-        self.sd_edit.setPlaceholderText("Mounted SD card root…")
+        self.sd_edit.setPlaceholderText(
+            "Mounted Echo SD card (where the .m3u backup is written)…"
+        )
         sd_browse = QPushButton("Browse…")
         sd_browse.clicked.connect(self._pick_sd)
         row.addWidget(QLabel("SD card:"))
@@ -42,18 +57,16 @@ class DeviceTab(QWidget):
         row.addWidget(sd_browse)
         outer.addLayout(row)
 
-        # Library row (manifest source for push)
-        row2 = QHBoxLayout()
-        self.lib_edit = QLineEdit()
-        self.lib_edit.setPlaceholderText(
-            "Output library root (defaults to SD card root if blank)…"
+        # Help line clarifying why both paths exist.
+        help_label = QLabel(
+            "<small>The <b>local library</b> is your computer-side "
+            "Echo-Library/ tree (the manifest with favorites lives there). "
+            "The <b>SD card</b> is the mounted Echo, where the .m3u export "
+            "is written. They're usually different paths because the manifest "
+            "doesn't get rsynced to the card.</small>"
         )
-        lib_browse = QPushButton("Browse…")
-        lib_browse.clicked.connect(self._pick_lib)
-        row2.addWidget(QLabel("Library:"))
-        row2.addWidget(self.lib_edit)
-        row2.addWidget(lib_browse)
-        outer.addLayout(row2)
+        help_label.setWordWrap(True)
+        outer.addWidget(help_label)
 
         # Action buttons
         btn_row = QHBoxLayout()
@@ -181,9 +194,14 @@ class DeviceTab(QWidget):
         lib_root = Path(lib_text).expanduser().resolve()
         if not (lib_root / MANIFEST_NAME).exists():
             QMessageBox.warning(
-                self, "No manifest",
-                f"Couldn't find {MANIFEST_NAME} under {lib_root}. "
-                "Run a build first so there's a library to draw favorites from.",
+                self, "No manifest at the local library path",
+                f"Couldn't find {MANIFEST_NAME} under {lib_root}.\n\n"
+                "Set 'Local library' to the folder where build wrote your "
+                "Echo-Library/ tree (the one with the manifest). The SD card "
+                "usually doesn't have the manifest because the standard rsync "
+                "command excludes it.\n\n"
+                "Example: Local library = /mnt/games/Music/Echo-Library/, "
+                "SD card = /media/zyttal/ECHO/.",
             )
             return
 
@@ -203,28 +221,24 @@ class DeviceTab(QWidget):
 
         tracks = [Path(e.target) for e in favs]
         try:
-            written = write_playlist(sd_root, tracks)
+            written = write_playlist(sd_root, tracks, lib_root=lib_root)
         except EmptyPlaylistError as e:
             QMessageBox.critical(
                 self, "Nothing to export",
-                f"All {e.skipped} favorited tracks live outside the SD card "
-                f"root you set ({sd_root}).\n\n"
-                "The library has to physically be on the SD card before the "
-                "M3U paths can make sense. Steps:\n\n"
-                "  1. rsync your Echo-Library tree to the SD card\n"
-                "  2. Point this tab at <SD card>/Music/ (or wherever the "
-                "library landed on the card)\n"
-                "  3. Click Export again",
+                f"All {e.skipped} favorited tracks live outside the local "
+                f"library root ({lib_root}).\n\n"
+                "That usually means the manifest references paths under a "
+                "different folder than the one set as 'Local library'. "
+                "Point 'Local library' at the same folder you ran build into.",
             )
             return
 
         n = len(tracks)
-        skipped = sum(1 for t in tracks if sd_root not in t.resolve().parents)
+        skipped = sum(1 for t in tracks if lib_root not in t.resolve().parents)
         msg = f"Exported {n - skipped}/{n} tracks to {written.name}."
         if skipped:
-            msg += (f"\n({skipped} favorited tracks live outside the SD card "
-                    "root and were skipped — copy the library to the card "
-                    "first, then export again.)")
+            msg += (f"\n({skipped} favorited tracks live outside the local "
+                    "library root and were skipped.)")
         QMessageBox.information(self, "Exported", msg)
         self.status.setText(msg)
 

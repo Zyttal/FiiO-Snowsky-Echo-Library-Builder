@@ -457,24 +457,24 @@ def favorites_push(output_dir, sd_root, fmt, name):
         return
     tracks = [Path(e.target) for e in favs]
     try:
-        written = write_playlist(sd_root, tracks, name=name)
+        written = write_playlist(sd_root, tracks, name=name, lib_root=output_dir)
     except EmptyPlaylistError as e:
         click.echo(
             f"ERROR: {e.skipped} favorited tracks all live outside "
-            f"--sd-root ({sd_root}).\n"
+            f"--output ({output_dir}).\n"
             "The M3U would have zero entries — refusing to write it.\n"
-            "Copy your library to the SD card first (rsync), then point "
-            "--sd-root at the on-card library root and re-run.",
+            "Make sure --output points at the local Echo-Library root that "
+            "contains your manifest, not at the SD card mount.",
             err=True,
         )
         sys.exit(2)
     n = len(tracks)
-    skipped = sum(1 for t in tracks if sd_root not in t.resolve().parents)
+    skipped = sum(1 for t in tracks if output_dir not in t.resolve().parents)
     click.echo(f"Exported {n - skipped}/{n} tracks to {written}.")
     click.echo("(Backup format — the Echo's chip cannot play M3U directly.)")
     if skipped:
         click.echo(
-            f"  ({skipped} tracks live outside --sd-root and were skipped.)",
+            f"  ({skipped} tracks live outside --output and were skipped.)",
             err=True,
         )
 
