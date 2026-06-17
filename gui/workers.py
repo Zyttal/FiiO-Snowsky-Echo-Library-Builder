@@ -134,6 +134,84 @@ class PlaylistPushRunner(QRunnable):
         self.signals.finished.emit(pushed)
 
 
+class LibraryScanSignals(QObject):
+    """Per-file signals emitted by LibraryScanRunner."""
+    started = Signal(int)             # total flac files discovered
+    track = Signal(dict)              # one track's metadata, see LibraryScanRunner.run
+    finished = Signal(int)            # total tracks reported
+    cancelled = Signal()
+    error = Signal(str)
+
+
+class LibraryScanRunner(QRunnable):
+    """Walk a library tree on a background thread and emit per-track
+    metadata. Used by the Library tab so opening a multi-hundred-file
+    SD card doesn't freeze the GUI.
+
+    `manifest_lookup` is a flat dict keyed by str(target_path) and
+    holding tuples of (favorite: bool, playlists: list[str]). Building
+    it on the calling thread before submit means the worker doesn't
+    need to touch the Manifest object (which isn't thread-safe to share).
+    """
+    def __init__(self, root: Path, manifest_lookup: dict) -> None:
+        super().__init__()
+        self.root = root
+        self.manifest_lookup = manifest_lookup
+        self.signals = LibraryScanSignals()
+        self._cancel = False
+
+    def cancel(self) -> None:
+        self._cancel = True
+
+    def run(self) -> None:
+        try:
+            from mutagen.flac import FLAC
+            paths = sorted(self.root.rglob("*.flac"))
+            self.signals.started.emit(len(paths))
+            count = 0
+            for p in paths:
+                if self._cancel:
+                    self.signals.cancelled.emit()
+                    return
+                rel = p.relative_to(self.root)
+                parts = rel.parts
+                if len(parts) < 3:
+                    continue
+                artist, album = parts[0], parts[1]
+
+                genre, bitrate = "", ""
+                try:
+                    flac = FLAC(p)
+                    if flac.tags:
+                        gv = flac.tags.get("GENRE")
+                        if gv:
+                            genre = gv[0]
+                    try:
+                        bitrate = f"{flac.info.bitrate / 1000:.0f} kbps"
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+
+                target_str = str(p)
+                fav, playlists = self.manifest_lookup.get(
+                    target_str, (False, []))
+                self.signals.track.emit({
+                    "path": target_str,
+                    "filename": p.name,
+                    "artist": artist,
+                    "album": album,
+                    "genre": genre,
+                    "bitrate": bitrate,
+                    "favorite": fav,
+                    "playlists": list(playlists),
+                })
+                count += 1
+            self.signals.finished.emit(count)
+        except Exception as e:  # noqa: BLE001
+            self.signals.error.emit(f"{type(e).__name__}: {e}")
+
+
 class DownloadSignals(QObject):
     """Qt signals emitted from the download supervisor."""
     started = Signal(int)                 # total songs
