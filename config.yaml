@@ -25,3 +25,8 @@ ampersand_replacement: 'and'
 
 # Parallelism
 workers: null                  # null = CPU count - 1.
+
+# Tag fallbacks
+# default_genre: "Unknown"     # If a source track has no GENRE tag, write this
+                               # one instead. Without this, the Echo shows
+                               # "Unknown" for any source missing the field.

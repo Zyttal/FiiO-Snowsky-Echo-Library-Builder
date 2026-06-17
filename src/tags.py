@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from mutagen.flac import FLAC, Picture
-from mutagen.id3 import APIC, ID3, TALB, TDRC, TIT2, TPE1, TPE2, TPOS, TRCK
+from mutagen.id3 import APIC, ID3, TALB, TCON, TDRC, TIT2, TPE1, TPE2, TPOS, TRCK
 from mutagen.mp3 import MP3
 
 # Common filename patterns we fall back to when tags are missing.
@@ -143,6 +143,8 @@ def write_mp3(target: Path, tags: SourceTags, picture_bytes: bytes | None) -> No
         audio.tags.add(TPE2(encoding=3, text=tags.album_artist))
     if tags.date:
         audio.tags.add(TDRC(encoding=3, text=tags.date))
+    if tags.genre:
+        audio.tags.add(TCON(encoding=3, text=tags.genre))
     if picture_bytes:
         audio.tags.add(
             APIC(encoding=3, mime="image/jpeg", type=3, desc="Cover", data=picture_bytes)

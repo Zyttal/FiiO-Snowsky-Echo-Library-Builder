@@ -140,6 +140,8 @@ def build(source_dir, output_dir, primary_format, mirror, only, compilation_matc
     compilation_counters: dict[tuple[str, int | None], int] = {}
     for item in items:
         t = tags.read_source(item.source, item.album_folder_name, item.disc_no)
+        if t.genre is None and cfg.default_genre:
+            t.genre = cfg.default_genre
         if compilation_match and compilation_match.lower() in item.album_folder_name.lower():
             # Preserve the original artist in the title so the Echo still shows it.
             original_artist = t.artist
