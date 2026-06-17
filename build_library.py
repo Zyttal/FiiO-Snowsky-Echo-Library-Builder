@@ -415,7 +415,16 @@ def _already_present(dest_root, request, cfg) -> bool:
 
 @cli.group()
 def favorites():
-    """Read favorites off the device or push manifest favorites to the SD card."""
+    """Export favorites to an SD-card backup file, or probe the card for any.
+
+    Heads up: FiiO has stated the Snowsky Echo's chip can't play M3U
+    playlists — it's a hardware limit, not a firmware feature pending.
+    `push` is therefore a pure backup/export format. It's still useful:
+    the Echo's internal favorites get wiped on every firmware update, so
+    a CRLF M3U on the SD card preserves your curated list and can be used
+    to manually re-favorite afterwards, or read by any other M3U-aware
+    player on a phone/PC.
+    """
 
 
 @favorites.command("push")
@@ -427,9 +436,14 @@ def favorites():
 @click.option("--format", "fmt", type=click.Choice(list(STRATEGIES.keys())), default="flac",
               show_default=True, help="Pick favorites from this format's tree.")
 @click.option("--name", default="Favorites.m3u", show_default=True,
-              help="Playlist filename written at the SD card root.")
+              help="Backup filename written at the SD card root.")
 def favorites_push(output_dir, sd_root, fmt, name):
-    """Write a Favorites.m3u from manifest-marked tracks to the SD card root."""
+    """Export manifest-marked favorites as a CRLF M3U on the SD card root.
+
+    Backup-only — the Echo's chip can't play M3U (per FiiO). The file is
+    a portable list of relative paths, useful for restoring favorites
+    manually after a firmware wipe, or reading on any other device.
+    """
     from src.favorites import write_playlist
 
     output_dir = output_dir.resolve()
@@ -442,7 +456,8 @@ def favorites_push(output_dir, sd_root, fmt, name):
         return
     tracks = [Path(e.target) for e in favs]
     written = write_playlist(sd_root, tracks, name=name)
-    click.echo(f"Wrote {len(tracks)} tracks to {written}.")
+    click.echo(f"Exported {len(tracks)} tracks to {written}.")
+    click.echo("(Backup format — the Echo's chip cannot play M3U directly.)")
     skipped = sum(1 for t in tracks if sd_root not in t.resolve().parents)
     if skipped:
         click.echo(f"  ({skipped} tracks live outside --sd-root and were skipped.)",

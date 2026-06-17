@@ -11,9 +11,11 @@ flow, plus three new top-level features:
 - **GUI** — PySide6 desktop app (Build, Library, Device, Download tabs).
   Launch with `python -m gui`, or grab the per-OS installer attached to
   this release.
-- **Favorites** — mark tracks in the Library tab; push them as
-  `Favorites.m3u` to the SD card to survive on-device Favorites being
-  wiped on firmware updates.
+- **Favorites** — mark tracks in the Library tab and export them as a
+  `Favorites.m3u` backup on the SD card. FiiO has stated the Echo's chip
+  cannot play M3U, so the export is strictly a backup/restore format —
+  useful for re-favoriting by hand after a firmware update wipes the
+  on-device list, or for reading on any other M3U-aware player.
 - **YouTube downloader** — feed a song list to the Download tab (or
   `./build_library.py download --list ...`); each line is enriched via
   MusicBrainz and landed in the source tree as a tagged FLAC ready for

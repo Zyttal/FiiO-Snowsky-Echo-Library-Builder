@@ -23,7 +23,7 @@ files fail to play. The known culprits — none documented in the manual — are
 | Track number as `3/12` | Some firmware versions display it literally | Writes bare `TRACKNUMBER=3` |
 | 24-bit / high-sample-rate FLAC | EQ silently disables above 16-bit | Downconverts to 16-bit / 44.1 kHz by default |
 | Source FLACs missing the GENRE tag | Echo shows "Unknown" for every track | Optional `default_genre` config fallback fills in a value when the source has none |
-| Favorites kept only inside the device | No way to back up or restore them | `Favorites.m3u` push from the GUI/CLI seeds a playlist the Echo reads |
+| Favorites kept only inside the device, wiped on every firmware update | Curating means re-favoriting from scratch after every FW bump | `Favorites.m3u` push exports the curated list as a CRLF M3U backup at the SD card root — FiiO has stated the Echo's chip can't play M3U, so the file is for archival/restore, not on-device playback |
 
 Everything is configurable; the defaults match what the device prefers.
 
@@ -160,9 +160,10 @@ personal-library use on the user's own device; how you use it is on you.
 ### Favorites
 
 The Echo's on-device "Add to Favorites" list lives in internal flash and isn't
-exposed on the SD card in any documented format. This tool gives you a way
-around that: mark tracks favorite in the GUI (Library tab) and push them as
-a CRLF M3U playlist the device reads.
+exposed on the SD card in any documented format. Worse, the list is wiped on
+every firmware update — head-fi reports confirm users have to re-add tracks
+from scratch every time. This tool can't fix the device-side problem, but it
+can give you a durable backup:
 
 ```bash
 # Push manifest favorites to <SD card>/Favorites.m3u
@@ -173,6 +174,22 @@ a CRLF M3U playlist the device reads.
 # SQLite, plain playlists). Returns nothing if favorites are flash-only.
 ./build_library.py favorites pull --sd-root /media/$USER/ECHO/
 ```
+
+**M3U playback isn't coming.** FiiO has stated publicly (Head-Fi / Reddit
+threads, as of mid-2026) that the Echo line's chip can't support M3U
+playlists — it's a hardware limitation, not a firmware feature waiting to
+ship. So the `Favorites.m3u` we write is purely a **backup format**: a
+standard CRLF playlist with relative paths, useful for:
+
+- Restoring your curated list manually after a firmware update wipes the
+  on-device favorites.
+- Importing into a media player on a phone or PC that *does* read M3U.
+- Migrating to a different DAP later without losing your selections.
+
+The device itself won't surface it as a playable playlist. If you want
+something that does play on the Echo, you'd need to physically reorganise
+files into a "Favorites" folder — that's a different feature (call it a
+"playlist as folder" mode) and not built here yet.
 
 ### GUI
 

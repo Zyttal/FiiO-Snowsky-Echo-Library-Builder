@@ -1,16 +1,23 @@
-"""Favorites: write playlists to the Echo's SD card, read them back where
-the device's storage format permits.
+"""Favorites: export the curated list as an .m3u backup on the SD card,
+and best-effort probe any existing favorites data the device may have
+left there.
 
-The Echo reads `.m3u` / `.m3u8` playlists at the root of the SD card. We
-always write a CRLF-terminated, relative-path UTF-8 M3U — that's the format
-FiiO firmwares universally accept and what the device's playlist UI surfaces.
+Important: FiiO has publicly stated the Snowsky Echo's chip cannot play
+M3U playlists (Head-Fi / Reddit threads, mid-2026 — chip-level limit,
+not a missing firmware feature). The `.m3u` we write is therefore a
+durable BACKUP — useful for restoring favorites by hand after the
+device's internal list gets wiped on a firmware update, or for reading
+on another M3U-aware player. The device itself won't surface it.
 
-Reading favorites back off the device is best-effort: as of 2026-06, FiiO
-does not publish where the on-device "Add to Favorites" list lives. We probe
-the SD card for plausible locations (hidden FiiO folders, SQLite, plain
-playlists) and return whatever we can find. If nothing matches, callers
-should fall back to "push-only" — generate the M3U from manifest favorites
-and let the user re-favorite from the playlist on-device.
+Format choice: CRLF-terminated, relative-path UTF-8 M3U. Maximally
+portable, parses cleanly in foobar2000, Plex, etc.
+
+Reading favorites back off the device is best-effort: FiiO doesn't
+publish where the on-device "Add to Favorites" list lives. We probe the
+SD card for plausible locations (hidden FiiO folders, SQLite, plain
+text lists) and return whatever we can find. As of 2026-06 the favorites
+are believed to live in internal flash and not on the card at all, so
+this routine usually returns empty — that's expected.
 """
 from __future__ import annotations
 

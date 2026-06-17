@@ -57,14 +57,24 @@ class DeviceTab(QWidget):
 
         # Action buttons
         btn_row = QHBoxLayout()
-        self.pull_btn = QPushButton("Pull favorites from device")
-        self.push_btn = QPushButton("Push Favorites.m3u to card")
+        self.pull_btn = QPushButton("Probe SD card for existing favorites")
+        self.push_btn = QPushButton("Export favorites as .m3u backup")
         self.pull_btn.clicked.connect(self._pull)
         self.push_btn.clicked.connect(self._push)
         btn_row.addWidget(self.pull_btn)
         btn_row.addWidget(self.push_btn)
         btn_row.addStretch()
         outer.addLayout(btn_row)
+
+        caveat = QLabel(
+            "<small><b>Heads up:</b> FiiO has stated the Snowsky Echo's "
+            "chip can't play M3U playlists — the export writes a standard "
+            "CRLF .m3u as a <i>backup</i>, not for on-device playback. "
+            "Useful for restoring favorites after a firmware update wipes "
+            "the internal list, or for reading on any other player.</small>"
+        )
+        caveat.setWordWrap(True)
+        outer.addWidget(caveat)
 
         # Results list
         outer.addWidget(QLabel("Detected favorites on device:"))
@@ -142,9 +152,10 @@ class DeviceTab(QWidget):
             return
 
         manifest = Manifest(lib_root / MANIFEST_NAME)
-        # We push only FLAC favorites — the Echo's M3U scanner picks tracks
-        # by path, and the primary format is the canonical one. (If the
-        # user has only an MP3 library on the card, change this.)
+        # Prefer FLAC favorites for the export — the primary format is the
+        # canonical one in the manifest. Fall back to any format if no FLAC
+        # favorites exist. (The Echo can't play the .m3u directly anyway;
+        # this just affects which paths land in the backup.)
         favs = manifest.favorites(fmt="flac") or manifest.favorites()
         if not favs:
             QMessageBox.information(
@@ -157,18 +168,18 @@ class DeviceTab(QWidget):
         tracks = [Path(e.target) for e in favs]
         written = write_playlist(sd_root, tracks)
         skipped = sum(1 for t in tracks if sd_root not in t.resolve().parents)
-        msg = f"Wrote {len(tracks) - skipped} tracks to {written.name}."
+        msg = f"Exported {len(tracks) - skipped} tracks to {written.name}."
         if skipped:
             msg += (f"\n({skipped} favorited tracks live outside the SD card "
                     "root and were skipped — copy the library to the card "
-                    "first, then push again.)")
-        QMessageBox.information(self, "Pushed", msg)
+                    "first, then export again.)")
+        QMessageBox.information(self, "Exported", msg)
         self.status.setText(msg)
 
     def note_favorites_changed(self) -> None:
         """Called when the Library tab updates a favorite — just hint to the
-        user that a push would now have different content."""
+        user that the export is now out of date."""
         cur = self.status.text()
-        suffix = "  [favorites changed — push to refresh the card]"
+        suffix = "  [favorites changed — re-export to refresh the backup]"
         if suffix not in cur:
             self.status.setText((cur + suffix).strip())
