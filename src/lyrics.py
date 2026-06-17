@@ -26,7 +26,7 @@ import urllib.request
 _LRCLIB_GET = "https://lrclib.net/api/get"
 _LRCLIB_SEARCH = "https://lrclib.net/api/search"
 _USER_AGENT = (
-    "echo-library-builder/0.2 "
+    "echo-library-builder/0.1 "
     "(https://github.com/local/echo-library-builder)"
 )
 
