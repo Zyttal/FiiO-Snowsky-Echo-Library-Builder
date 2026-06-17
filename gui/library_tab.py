@@ -79,6 +79,18 @@ class LibraryTab(QWidget):
         row.addWidget(self.cancel_btn)
         outer.addLayout(row)
 
+        # Live search across the tree — matches against track filename,
+        # album, or artist. Empty needle restores the full tree.
+        search_row = QHBoxLayout()
+        search_row.addWidget(QLabel("Search:"))
+        self.search_edit = QLineEdit()
+        self.search_edit.setPlaceholderText(
+            "Filter by artist / album / track…"
+        )
+        self.search_edit.textChanged.connect(self._on_search_changed)
+        search_row.addWidget(self.search_edit)
+        outer.addLayout(search_row)
+
         # Destructive actions row — kept visible but red-tinted to remind
         # the user this writes to disk.
         danger_row = QHBoxLayout()
@@ -333,6 +345,33 @@ class LibraryTab(QWidget):
     def _cancel_scan(self) -> None:
         if self._scan is not None:
             self._scan.cancel()
+
+    def _on_search_changed(self, text: str) -> None:
+        """Live-filter the tree by typed text. Empty needle restores the
+        full tree. A leaf is shown when the needle appears in the track
+        filename, the album row text, or the artist row text; matching
+        leaves drag their ancestors visible too."""
+        needle = text.strip().lower()
+        if not needle:
+            for i in range(self.tree.topLevelItemCount()):
+                _show_recursive(self.tree.topLevelItem(i), True)
+            return
+        # Hide everything first, then unhide matches + ancestors.
+        for i in range(self.tree.topLevelItemCount()):
+            _show_recursive(self.tree.topLevelItem(i), False)
+        for item in self._iter_track_items():
+            album_item = item.parent()
+            artist_item = album_item.parent() if album_item else None
+            hay = " ".join((
+                item.text(self.COL_NAME),
+                album_item.text(self.COL_NAME) if album_item else "",
+                artist_item.text(self.COL_NAME) if artist_item else "",
+            )).lower()
+            if needle in hay:
+                cur = item
+                while cur is not None:
+                    cur.setHidden(False)
+                    cur = cur.parent()
 
     def _fetch_lyrics(self) -> None:
         """Spawn LyricsRunner over the loaded library. Idempotent; skips
@@ -787,3 +826,12 @@ class LibraryTab(QWidget):
                 album = artist.child(j)
                 for k in range(album.childCount()):
                     yield album.child(k)
+
+
+def _show_recursive(item, visible: bool) -> None:
+    """Hide/show an item and every descendant. Used by the search filter
+    to reset the tree's visibility state in one pass before unhiding
+    matches."""
+    item.setHidden(not visible)
+    for i in range(item.childCount()):
+        _show_recursive(item.child(i), visible)
