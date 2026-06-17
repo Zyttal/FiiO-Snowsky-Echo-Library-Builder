@@ -4,3 +4,7 @@ __pycache__/
 .venv/
 .echo-library-manifest.json
 *.log
+# PyInstaller / packaging artifacts
+build/
+dist/
+packaging/ffmpeg/
