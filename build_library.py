@@ -285,12 +285,18 @@ def verify(output_dir):
     output_dir = output_dir.resolve()
     issues = []
     n = 0
+    missing_genre = 0
+    missing_genre_albums: dict[str, int] = {}
     for flac_path in output_dir.rglob("*.flac"):
         n += 1
         f = FLAC(flac_path)
         t = f.tags or {}
         if not t.get("ARTIST") or not t.get("ALBUM") or not t.get("TITLE"):
             issues.append(f"missing core tags: {flac_path}")
+        if not t.get("GENRE"):
+            missing_genre += 1
+            album_key = str(flac_path.parent.relative_to(output_dir))
+            missing_genre_albums[album_key] = missing_genre_albums.get(album_key, 0) + 1
         if f.info.bits_per_sample > 16:
             issues.append(f"bit depth > 16: {flac_path}")
         if f.info.sample_rate > 96000:
@@ -302,6 +308,15 @@ def verify(output_dir):
             if forbidden in flac_path.name:
                 issues.append(f"forbidden char {forbidden!r} in filename: {flac_path}")
     click.echo(f"Verified {n} FLAC files.")
+    if n:
+        pct = 100 * missing_genre / n
+        click.echo(f"Genre coverage: {n - missing_genre}/{n} tagged "
+                   f"({missing_genre} missing, {pct:.1f}%).")
+        if missing_genre:
+            worst = sorted(missing_genre_albums.items(), key=lambda kv: -kv[1])[:5]
+            click.echo("Top albums missing GENRE:")
+            for album, count in worst:
+                click.echo(f"  {count:4d}  {album}")
     if not issues:
         click.echo("All checks passed.")
     else:
